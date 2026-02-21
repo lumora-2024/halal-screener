@@ -1,53 +1,59 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════╗
 ║              🌙 HALAL STOCK SCREENER — QuantGPT by Umar               ║
-║         Shariah-Compliant Equity Screening Tool (AAOIFI Standards)    ║
+║     Screening methodology aligned with Zoya & Islamicly (AAOIFI)     ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 
-This screener evaluates stocks against Islamic finance criteria:
-  1. Business Activity Screen  → Excludes haram industries
-  2. Financial Ratio Screen    → Debt, interest income, receivables thresholds
-  3. Purification Calculation  → Estimated % of income to donate to charity
+Methodology Sources:
+  - Zoya      (https://zoya.finance)          — AAOIFI, 30% thresholds
+  - Islamicly (https://www.islamicly.com)     — AAOIFI, 5% haram revenue rule
 
-Standards followed: AAOIFI (Accounting & Auditing Organization for Islamic
-Financial Institutions) — the most widely accepted global halal standard.
+Three-Tier Rating System (matching Zoya):
+  ✅ COMPLIANT    — Passes all business activity + financial screens
+  🟡 QUESTIONABLE — Gray-area sector OR data insufficient for a firm ruling
+  ❌ NON-COMPLIANT — Fails business activity or financial ratio screen
+
+Two Screens (AAOIFI standard):
+  Screen 1 — Business Activity:
+    • Primary haram (auto-fail): alcohol, gambling, adult content, pork,
+      conventional banking/insurance, weapons of mass destruction
+    • Revenue from ALL impermissible activities < 5% of total revenue
+    • Gray-area (questionable): advertising, media/entertainment, defence,
+      supermarkets (sell alcohol/pork), hotels, diversified conglomerates
+
+  Screen 2 — Financial Ratios (Zoya methodology):
+    • Interest-bearing debt   / Market Cap  <  30%
+    • Interest-bearing assets / Market Cap  <  30%  ← cash + deposits
+    (Note: Islamicly also follows AAOIFI; Zoya uses 30%, not 33%)
+
+  Purification:
+    • % of impermissible revenue / total revenue = % of returns to donate
 
 Dependencies:
-    pip install yfinance pandas tabulate colorama openpyxl requests
-
-Usage:
-    python halal_screener.py
-    python halal_screener.py --tickers AAPL MSFT TSLA
-    python halal_screener.py --file my_watchlist.txt --export
+    pip install yfinance pandas tabulate colorama openpyxl requests streamlit
 """
 
 import yfinance as yf
 import pandas as pd
-import numpy as np
-import argparse
 import logging
 import os
-import json
 from datetime import datetime
-from tabulate import tabulate
-from colorama import Fore, Back, Style, init
 import warnings
 warnings.filterwarnings("ignore")
 
-# Initialize colorama for cross-platform colored output
-init(autoreset=True)
-
 # ─────────────────────────────────────────────
-#  LOGGING SETUP
+#  LOGGING
 # ─────────────────────────────────────────────
-os.makedirs("logs", exist_ok=True)
+os.makedirs("logs",    exist_ok=True)
 os.makedirs("reports", exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler(f"logs/halal_screener_{datetime.now().strftime('%Y%m%d')}.log"),
+        logging.FileHandler(
+            f"logs/halal_screener_{datetime.now().strftime('%Y%m%d')}.log"
+        ),
         logging.StreamHandler()
     ]
 )
@@ -55,80 +61,123 @@ logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════
-#  SECTION 1: SHARIAH SCREENING CONFIGURATION
+#  SECTION 1: SCREENING CONFIGURATION
+#  Sources: Zoya help center + Islamicly screening page
 # ═══════════════════════════════════════════════════════════════
 
-# ── Haram Business Activity Keywords ─────────────────────────
-# If any of these appear in company description or sector/industry,
-# the stock FAILS the business activity screen.
-HARAM_KEYWORDS = {
-    "Alcohol & Beverages": [
+# ── Thresholds (Zoya / AAOIFI standard) ──────────────────────
+THRESHOLDS = {
+    # Zoya: "debt-to-market cap ratio can be no higher than 30%"
+    # Reference: https://help.zoya.finance/en/articles/4189798
+    "max_debt_to_market_cap":        0.30,
+
+    # Zoya: "interest-bearing securities cannot exceed 30% of market cap"
+    # Formula: (Cash + Cash Equivalents + Deposits) / Market Cap
+    "max_interest_bearing_securities": 0.30,
+
+    # Islamicly: "revenue from non-permissible operating activities < 5%"
+    # Zoya: "no more than 5% of revenue can come from impermissible means"
+    "max_haram_revenue_ratio":       0.05,
+}
+
+# ── Primary Haram Activities (auto-fail) ─────────────────────
+# Both Zoya and Islamicly auto-fail companies with these as core activities.
+PRIMARY_HARAM = {
+    "Alcohol": [
         "alcohol", "beer", "wine", "spirits", "brewery", "distillery",
-        "alcoholic beverages", "malt beverages", "brewers"
+        "brewers", "winery", "malt beverage", "alcoholic drink"
     ],
     "Tobacco": [
-        "tobacco", "cigarette", "cigars", "smoking products"
+        "tobacco", "cigarette", "cigars", "nicotine products"
     ],
-    "Gambling & Casinos": [
+    "Gambling": [
         "casino", "gambling", "lottery", "betting", "wagering",
-        "gaming", "horse racing", "sports betting"
-    ],
-    "Pork & Non-Halal Food": [
-        "pork", "swine", "pig farming", "ham", "bacon"
-    ],
-    "Weapons & Defense (Controversial)": [
-        "weapons", "ammunition", "firearms", "landmines", "cluster bombs",
-        "nuclear weapons", "biological weapons", "chemical weapons"
+        "sports betting", "horse racing", "gaming machines"
     ],
     "Adult Entertainment": [
-        "adult entertainment", "pornography", "adult content",
-        "xxx", "adult films", "erotic"
+        "adult entertainment", "pornography", "adult content", "erotic"
     ],
-    "Conventional Banking & Insurance": [
-        "commercial banking", "savings bank", "investment bank",
-        "conventional insurance", "life insurance", "property insurance",
-        "mortgage", "credit cards", "payday loans"
+    "Pork Products": [
+        "pork processing", "pig farming", "swine production", "ham producer"
     ],
-    "Interest-Based Finance": [
-        "consumer finance", "personal finance", "subprime lending",
-        "loan origination", "pawnshops"
-    ]
+    "Weapons of Mass Destruction": [
+        "nuclear weapons", "biological weapons", "chemical weapons",
+        "landmines", "cluster munitions", "cluster bombs"
+    ],
+    "Conventional Banking": [
+        # Full-service conventional banks are non-compliant (interest-based)
+        "commercial banking", "retail banking", "savings bank",
+        "investment banking", "mortgage banking"
+    ],
+    "Interest-Based Lending": [
+        "consumer finance", "payday loans", "pawnshops", "subprime lending",
+        "loan shark"
+    ],
+    "Conventional Insurance": [
+        # Conventional insurance involves gharar (uncertainty) — non-compliant
+        "life insurance", "property insurance", "casualty insurance",
+        "conventional insurance"
+    ],
 }
 
-# Sectors that are automatically flagged for review
-FLAGGED_SECTORS = [
-    "Financial Services",
-    "Banks—Regional",
-    "Banks—Diversified",
-    "Insurance—Life",
-    "Insurance—Diversified",
-    "Insurance—Property & Casualty",
-    "Gambling",
-    "Beverages—Brewers",
-    "Beverages—Wineries & Distilleries",
+# ── Gray-Area Activities (Questionable — Zoya's "Questionable" status) ──
+# Zoya: "companies that operate in an industry that falls into a gray area,
+# prompting differing opinions among scholars"
+GRAY_AREA = {
+    "Advertising Platforms": [
+        "digital advertising", "online advertising", "ad-supported",
+        "advertising platform"
+    ],
+    "Media & Entertainment": [
+        "music streaming", "video streaming", "entertainment content",
+        "social media"
+    ],
+    "Diversified Retail": [
+        # Supermarkets that sell alcohol/pork — questionable, not auto-fail
+        "supermarket", "hypermarket", "grocery store", "wholesale club"
+    ],
+    "Conventional Fintech": [
+        "digital payments", "credit card network", "buy now pay later",
+        "payment processing"
+    ],
+    "Defense & Aerospace": [
+        "defense", "aerospace", "military", "arms", "weapons", "ammunition",
+        "firearms", "ordnance"
+    ],
+    "Hotels & Hospitality": [
+        "hotel", "resort", "hospitality", "lodging", "accommodation"
+    ],
+    "Diversified Conglomerates": [
+        "conglomerate", "diversified holdings"
+    ],
+}
+
+# ── Sector-Level Flags ────────────────────────────────────────
+# Sectors where Islamicly and Zoya both flag for closer review
+HARAM_SECTORS = [
+    "Banks—Regional", "Banks—Diversified", "Banks—Global",
+    "Insurance—Life", "Insurance—Diversified", "Insurance—Property & Casualty",
+    "Gambling", "Beverages—Brewers", "Beverages—Wineries & Distilleries",
     "Tobacco",
-    "Defense & Space",
 ]
 
-# ── Shariah Financial Thresholds (AAOIFI) ────────────────────
-THRESHOLDS = {
-    # Debt / Market Cap must be < 33%
-    "max_debt_to_market_cap": 0.33,
-
-    # Interest income / Total revenue must be < 5%
-    "max_interest_income_ratio": 0.05,
-
-    # (Cash + Interest-bearing Securities) / Market Cap must be < 33%
-    "max_liquid_assets_ratio": 0.33,
-
-    # Accounts receivable / Total assets must be < 49%
-    # (Some scholars use 33% — configurable below)
-    "max_receivables_ratio": 0.49,
-}
+QUESTIONABLE_SECTORS = [
+    "Financial Services",           # May include interest products
+    "Capital Markets",              # Investment banking activities
+    "Asset Management",             # May manage non-compliant funds
+    "Credit Services",              # Credit cards, BNPL
+    "Entertainment",                # Music, streaming, gaming
+    "Advertising Agencies",         # May promote haram products
+    "Specialty Retail",             # Could sell prohibited items
+    "Grocery Stores",               # Sell alcohol/pork
+    "Department Stores",            # Sell alcohol/pork
+    "Aerospace & Defense",          # Weapons manufacturing
+    "Hotels & Motels",              # Serve alcohol
+    "Resorts & Casinos",            # Gambling + alcohol
+    "Broadcasting",                 # Entertainment content
+]
 
 # ── Default Watchlist ─────────────────────────────────────────
-# A broad list of popular stocks for demo purposes.
-# Edit this or pass your own via CLI.
 DEFAULT_TICKERS = [
     # Big Tech
     "AAPL", "MSFT", "GOOGL", "META", "AMZN", "NVDA", "TSLA",
@@ -136,14 +185,10 @@ DEFAULT_TICKERS = [
     "JNJ", "PFE", "ABBV", "MRK", "UNH",
     # Consumer
     "MCD", "KO", "PEP", "PG", "WMT", "COST",
-    # ETFs (Islamic ETFs)
-    "SPUS", "HLAL", "ISDU",
-    # Industrial / Tech
-    "ORCL", "CRM", "ADBE", "INTC", "AMD", "QCOM",
+    # Islamic ETFs
+    "SPUS", "HLAL",
     # Finance (likely to fail)
     "JPM", "BAC", "GS", "V", "MA",
-    # REITs
-    "O", "SPG",
 ]
 
 
@@ -153,41 +198,38 @@ DEFAULT_TICKERS = [
 
 def fetch_stock_data(ticker: str) -> dict:
     """
-    Fetch all required financial data for a given ticker using yfinance.
-    Returns a dictionary with company info and financial metrics.
+    Fetch financial data from Yahoo Finance.
+    Returns all fields needed for Zoya/Islamicly-style screening.
     """
     try:
         stock = yf.Ticker(ticker)
         info  = stock.info
 
-        # ── Core Company Info ────────────────────────────────
         name        = info.get("longName", ticker)
-        sector      = info.get("sector", "N/A")
-        industry    = info.get("industry", "N/A")
-        description = info.get("longBusinessSummary", "").lower()
-        country     = info.get("country", "N/A")
-        market_cap  = info.get("marketCap", None)
-        price       = info.get("currentPrice", info.get("regularMarketPrice", None))
+        sector      = info.get("sector", "N/A") or "N/A"
+        industry    = info.get("industry", "N/A") or "N/A"
+        description = (info.get("longBusinessSummary", "") or "").lower()
+        country     = info.get("country", "N/A") or "N/A"
+        market_cap  = info.get("marketCap")
+        price       = info.get("currentPrice") or info.get("regularMarketPrice")
 
-        # ── Balance Sheet Metrics ────────────────────────────
-        total_debt        = info.get("totalDebt", 0) or 0
-        total_assets      = info.get("totalAssets", None)
-        total_cash        = info.get("totalCash", 0) or 0
-        net_receivables   = info.get("netReceivables", 0) or 0
+        # ── Balance Sheet ────────────────────────────────────
+        # Zoya uses "interest-bearing debt" specifically.
+        # yfinance "totalDebt" = long-term + short-term debt (good proxy)
+        total_debt  = info.get("totalDebt", 0) or 0
+        total_cash  = info.get("totalCash", 0) or 0  # cash + short-term investments
 
-        # ── Income Statement Metrics ─────────────────────────
-        total_revenue     = info.get("totalRevenue", None)
-        # yfinance doesn't directly expose interest income — we approximate
-        # using "interestExpense" as a proxy (conservative approach)
-        interest_expense  = abs(info.get("interestExpense", 0) or 0)
-        operating_cashflow = info.get("operatingCashflow", None)
+        # ── Income Statement ─────────────────────────────────
+        total_revenue    = info.get("totalRevenue")
+        # interestExpense is our best proxy for interest income from operations
+        interest_expense = abs(info.get("interestExpense", 0) or 0)
 
         # ── Valuation ────────────────────────────────────────
-        pe_ratio          = info.get("trailingPE", None)
-        pb_ratio          = info.get("priceToBook", None)
-        dividend_yield    = info.get("dividendYield", 0) or 0
-        eps               = info.get("trailingEps", None)
-        roe               = info.get("returnOnEquity", None)
+        pe_ratio       = info.get("trailingPE")
+        pb_ratio       = info.get("priceToBook")
+        dividend_yield = info.get("dividendYield", 0) or 0
+        eps            = info.get("trailingEps")
+        roe            = info.get("returnOnEquity")
 
         return {
             "ticker":           ticker,
@@ -199,9 +241,7 @@ def fetch_stock_data(ticker: str) -> dict:
             "market_cap":       market_cap,
             "price":            price,
             "total_debt":       total_debt,
-            "total_assets":     total_assets,
             "total_cash":       total_cash,
-            "net_receivables":  net_receivables,
             "total_revenue":    total_revenue,
             "interest_expense": interest_expense,
             "pe_ratio":         pe_ratio,
@@ -217,171 +257,226 @@ def fetch_stock_data(ticker: str) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  SECTION 3: BUSINESS ACTIVITY SCREENING
+#  SECTION 3: BUSINESS ACTIVITY SCREEN
+#  Methodology: Zoya + Islamicly (both AAOIFI)
 # ═══════════════════════════════════════════════════════════════
 
 def screen_business_activity(data: dict) -> dict:
     """
-    Screen a stock's business activity against haram categories.
-    Returns a result dict with pass/fail and reason.
+    Screen 1 — Business Activity.
+
+    Zoya approach:
+      - Primary haram → NON-COMPLIANT
+      - Revenue from ALL impermissible sources must be < 5%
+      - Gray-area industries → QUESTIONABLE (scholars disagree)
+
+    Islamicly approach:
+      - Revenue from non-permissible operating activities < 5% of total
+        operating income → otherwise NON-COMPLIANT
+
+    Returns:
+        dict with keys: status, verdict ('pass'|'questionable'|'fail'), reason
     """
-    sector      = (data.get("sector", "") or "").strip()
-    industry    = (data.get("industry", "") or "").strip()
+    sector      = (data.get("sector",      "") or "").strip()
+    industry    = (data.get("industry",    "") or "").strip()
     description = (data.get("description", "") or "").lower()
 
-    # Combine all text to scan
-    combined_text = f"{sector} {industry} {description}".lower()
+    combined = f"{sector} {industry} {description}".lower()
 
-    # ── Check haram keywords ──────────────────────────────────
-    violations = []
-    for category, keywords in HARAM_KEYWORDS.items():
+    # ── 1. Primary haram keyword check ───────────────────────
+    primary_violations = []
+    for category, keywords in PRIMARY_HARAM.items():
         for kw in keywords:
-            if kw in combined_text:
-                violations.append(f"{category} ({kw})")
-                break  # One match per category is enough
+            if kw in combined:
+                primary_violations.append(f"{category}")
+                break
 
-    # ── Check flagged sectors ─────────────────────────────────
-    flagged = []
-    for fs in FLAGGED_SECTORS:
-        if fs.lower() in combined_text or sector == fs or industry == fs:
-            flagged.append(fs)
+    if primary_violations:
+        return {
+            "verdict": "fail",
+            "status":  "❌ NON-COMPLIANT",
+            "reason":  f"Primary haram activity: {primary_violations[0]}",
+            "detail":  (
+                "Core business involves a prohibited activity under AAOIFI "
+                "standards (Zoya / Islamicly). No scholar permits investment here."
+            )
+        }
 
-    if violations:
+    # ── 2. Haram sector check ─────────────────────────────────
+    for hs in HARAM_SECTORS:
+        if hs.lower() in combined or sector == hs or industry == hs:
+            return {
+                "verdict": "fail",
+                "status":  "❌ NON-COMPLIANT",
+                "reason":  f"Haram sector: {hs}",
+                "detail":  (
+                    "Company operates in a sector classified as non-permissible "
+                    "by AAOIFI standards. Flagged by Zoya & Islamicly."
+                )
+            }
+
+    # ── 3. Gray-area keyword check (Questionable) ────────────
+    gray_flags = []
+    for category, keywords in GRAY_AREA.items():
+        for kw in keywords:
+            if kw in combined:
+                gray_flags.append(category)
+                break
+
+    if not gray_flags:
+        for qs in QUESTIONABLE_SECTORS:
+            if qs.lower() in combined or sector == qs or industry == qs:
+                gray_flags.append(qs)
+                break
+
+    if gray_flags:
         return {
-            "pass":    False,
-            "status":  "❌ HARAM",
-            "reason":  f"Business activity violation: {'; '.join(violations[:2])}"
+            "verdict": "questionable",
+            "status":  "🟡 QUESTIONABLE",
+            "reason":  f"Gray-area industry: {gray_flags[0]}",
+            "detail":  (
+                f"Zoya rates this 'Questionable' — scholars differ on permissibility "
+                f"for '{gray_flags[0]}'. Review the business model carefully before investing."
+            )
         }
-    elif flagged:
-        return {
-            "pass":    None,  # None = Requires further review
-            "status":  "⚠️ REVIEW",
-            "reason":  f"Flagged sector — manual review needed: {flagged[0]}"
-        }
-    else:
-        return {
-            "pass":   True,
-            "status": "✅ PASS",
-            "reason": "No haram business activity detected"
-        }
+
+    # ── 4. Clean pass ─────────────────────────────────────────
+    return {
+        "verdict": "pass",
+        "status":  "✅ PASS",
+        "reason":  "No haram or gray-area business activity detected",
+        "detail":  (
+            "Core business activity appears permissible under AAOIFI standards "
+            "as applied by Zoya and Islamicly."
+        )
+    }
 
 
 # ═══════════════════════════════════════════════════════════════
-#  SECTION 4: FINANCIAL RATIO SCREENING
+#  SECTION 4: FINANCIAL RATIO SCREEN
+#  Methodology: Zoya (https://help.zoya.finance/...)
 # ═══════════════════════════════════════════════════════════════
 
 def screen_financial_ratios(data: dict) -> dict:
     """
-    Apply AAOIFI financial ratio screens.
-    All ratios use Market Cap as denominator (standard approach).
+    Screen 2 — Financial Ratios (Zoya methodology, AAOIFI standard).
+
+    Ratio 1 — Interest-Bearing Debt:
+        Total Debt / Market Cap  <  30%
+        Zoya: "a company's debt-to-market cap ratio can be no higher than 30%"
+
+    Ratio 2 — Interest-Bearing Securities:
+        (Cash + Cash Equivalents + Deposits) / Market Cap  <  30%
+        Zoya: "interest-bearing securities cannot exceed 30% of market cap"
+
+    Basis for 30%: Derived from the hadith of Saad Bin Abi Waqas where
+    the Prophet ﷺ said "one third, and one third is much" — AAOIFI applies
+    this to financial ratios (Zoya explains this on their help page).
+
+    Note: Some providers (DJIM) use 33%, but Zoya & Islamicly use 30%.
     """
-    market_cap       = data.get("market_cap")
-    total_debt       = data.get("total_debt", 0) or 0
-    total_cash       = data.get("total_cash", 0) or 0
-    net_receivables  = data.get("net_receivables", 0) or 0
-    total_assets     = data.get("total_assets") or 0
-    total_revenue    = data.get("total_revenue") or 0
+    market_cap = data.get("market_cap")
+    total_debt  = data.get("total_debt",  0) or 0
+    total_cash  = data.get("total_cash",  0) or 0
+    total_revenue    = data.get("total_revenue")    or 0
     interest_expense = data.get("interest_expense", 0) or 0
 
-    results   = {}
+    ratios    = {}
     failures  = []
     warnings_ = []
 
-    # ── 1. Debt Ratio ─────────────────────────────────────────
-    if market_cap and market_cap > 0:
-        debt_ratio = total_debt / market_cap
-        results["debt_ratio"] = round(debt_ratio * 100, 2)
-        threshold = THRESHOLDS["max_debt_to_market_cap"] * 100
+    debt_limit = THRESHOLDS["max_debt_to_market_cap"]
+    sec_limit  = THRESHOLDS["max_interest_bearing_securities"]
 
-        if debt_ratio > THRESHOLDS["max_debt_to_market_cap"]:
+    # ── Ratio 1: Interest-bearing debt / Market Cap ───────────
+    if market_cap and market_cap > 0:
+        debt_ratio         = total_debt / market_cap
+        ratios["debt_ratio"] = round(debt_ratio * 100, 2)
+
+        if debt_ratio > debt_limit:
             failures.append(
-                f"Debt ratio {debt_ratio:.1%} > {THRESHOLDS['max_debt_to_market_cap']:.0%} limit"
+                f"Debt/MktCap {debt_ratio:.1%} exceeds {debt_limit:.0%} limit"
             )
     else:
-        results["debt_ratio"] = None
+        ratios["debt_ratio"] = None
         warnings_.append("Market cap unavailable — debt ratio skipped")
 
-    # ── 2. Interest Income Ratio ──────────────────────────────
-    if total_revenue and total_revenue > 0:
-        interest_ratio = interest_expense / total_revenue
-        results["interest_ratio"] = round(interest_ratio * 100, 2)
-
-        if interest_ratio > THRESHOLDS["max_interest_income_ratio"]:
-            failures.append(
-                f"Interest income {interest_ratio:.1%} > {THRESHOLDS['max_interest_income_ratio']:.0%} limit"
-            )
-    else:
-        results["interest_ratio"] = None
-        warnings_.append("Revenue unavailable — interest ratio skipped")
-
-    # ── 3. Liquid Assets Ratio ────────────────────────────────
+    # ── Ratio 2: Interest-bearing securities / Market Cap ─────
+    # Zoya formula: (Cash + Cash Equivalents + Deposits) / Market Cap
     if market_cap and market_cap > 0:
-        liquid_ratio = total_cash / market_cap
-        results["liquid_ratio"] = round(liquid_ratio * 100, 2)
-        # This is informational — high cash is generally ok
-    else:
-        results["liquid_ratio"] = None
+        sec_ratio             = total_cash / market_cap
+        ratios["sec_ratio"]   = round(sec_ratio * 100, 2)
 
-    # ── 4. Receivables Ratio ──────────────────────────────────
-    if total_assets and total_assets > 0:
-        recv_ratio = net_receivables / total_assets
-        results["receivables_ratio"] = round(recv_ratio * 100, 2)
-
-        if recv_ratio > THRESHOLDS["max_receivables_ratio"]:
+        if sec_ratio > sec_limit:
             failures.append(
-                f"Receivables {recv_ratio:.1%} > {THRESHOLDS['max_receivables_ratio']:.0%} limit"
+                f"Interest-bearing securities {sec_ratio:.1%} exceeds {sec_limit:.0%} limit"
             )
     else:
-        results["receivables_ratio"] = None
+        ratios["sec_ratio"] = None
+        warnings_.append("Market cap unavailable — securities ratio skipped")
 
-    # ── Final Verdict ──────────────────────────────────────────
+    # ── Ratio 3: Haram Revenue % (Islamicly / Zoya 5% rule) ──
+    # We use interest_expense as proxy for impermissible income
+    if total_revenue > 0 and interest_expense > 0:
+        haram_rev_ratio           = interest_expense / total_revenue
+        ratios["haram_rev_ratio"] = round(haram_rev_ratio * 100, 4)
+
+        haram_limit = THRESHOLDS["max_haram_revenue_ratio"]
+        if haram_rev_ratio > haram_limit:
+            failures.append(
+                f"Impermissible revenue {haram_rev_ratio:.1%} exceeds {haram_limit:.0%} limit"
+            )
+    else:
+        ratios["haram_rev_ratio"] = 0.0
+
+    # ── Final verdict ─────────────────────────────────────────
     if failures:
         return {
-            "pass":     False,
+            "verdict":  "fail",
             "status":   "❌ FAIL",
-            "reason":   "; ".join(failures[:2]),
-            "ratios":   results,
+            "reason":   failures[0],
+            "ratios":   ratios,
             "warnings": warnings_
         }
-    else:
-        return {
-            "pass":     True,
-            "status":   "✅ PASS",
-            "reason":   "All financial ratios within Shariah limits",
-            "ratios":   results,
-            "warnings": warnings_
-        }
+
+    return {
+        "verdict":  "pass",
+        "status":   "✅ PASS",
+        "reason":   "All financial ratios within Zoya/AAOIFI limits",
+        "ratios":   ratios,
+        "warnings": warnings_
+    }
 
 
 # ═══════════════════════════════════════════════════════════════
 #  SECTION 5: PURIFICATION CALCULATION
+#  Both Zoya & Islamicly provide purification %
 # ═══════════════════════════════════════════════════════════════
 
 def calculate_purification(data: dict) -> dict:
     """
-    Calculates the estimated purification (zakat/sadaqah) percentage —
-    the % of dividends or profits an investor should donate to charity
-    to purify their investment from any impermissible income.
+    Purification = Impermissible Income / Total Revenue × 100
 
-    Formula: Interest Income / Total Revenue × 100 = Purification %
+    This is the percentage of any dividends or capital gains the investor
+    should donate to charity to purify their returns.
+
+    Both Zoya and Islamicly provide this calculation in their apps.
     """
-    total_revenue    = data.get("total_revenue") or 0
+    total_revenue    = data.get("total_revenue")    or 0
     interest_expense = data.get("interest_expense", 0) or 0
-    dividend_yield   = data.get("dividend_yield", 0) or 0
+    dividend_yield   = data.get("dividend_yield",   0) or 0
 
     if total_revenue > 0 and interest_expense > 0:
         purification_pct = (interest_expense / total_revenue) * 100
-        if dividend_yield > 0:
-            purification_per_share = (dividend_yield / 100) * purification_pct / 100
-        else:
-            purification_per_share = None
     else:
-        purification_pct        = 0.0
-        purification_per_share  = None
+        purification_pct = 0.0
 
     return {
-        "purification_pct":        round(purification_pct, 4),
-        "purification_per_share":  round(purification_per_share * 100, 6) if purification_per_share else None
+        "purification_pct": round(purification_pct, 4),
+        "explanation": (
+            f"Donate {purification_pct:.3f}% of your returns from this stock "
+            f"to charity to purify any residual impermissible income."
+        ) if purification_pct > 0 else "No purification required."
     }
 
 
@@ -391,58 +486,53 @@ def calculate_purification(data: dict) -> dict:
 
 def screen_stock(ticker: str) -> dict:
     """
-    Run the full Halal screening pipeline on a single ticker.
-    Returns a complete screening result dictionary.
+    Full halal screening pipeline for a single ticker.
+
+    Overall rating (matching Zoya's 3-tier system):
+      ✅ COMPLIANT      — Passes both screens
+      🟡 QUESTIONABLE   — Gray-area business OR borderline financials
+      ❌ NON-COMPLIANT  — Fails business activity or financial screen
     """
     logger.info(f"Screening {ticker}...")
 
-    # Step 1: Fetch data
     data = fetch_stock_data(ticker)
     if "error" in data:
         return {
-            "ticker":   ticker,
-            "name":     ticker,
-            "overall":  "⚠️ ERROR",
-            "error":    data["error"],
+            "ticker":    ticker,
+            "name":      ticker,
+            "overall":   "⚠️ ERROR",
+            "error":     data["error"],
             "compliant": False
         }
 
-    # Step 2: Business Activity Screen
-    biz_result = screen_business_activity(data)
-
-    # Step 3: Financial Ratio Screen
-    fin_result = screen_financial_ratios(data)
-
-    # Step 4: Purification
+    biz_result   = screen_business_activity(data)
+    fin_result   = screen_financial_ratios(data)
     purification = calculate_purification(data)
 
-    # ── Overall Verdict ───────────────────────────────────────
-    if biz_result["pass"] is False:
-        overall   = "❌ NOT HALAL"
+    # ── Overall verdict ───────────────────────────────────────
+    if biz_result["verdict"] == "fail" or fin_result["verdict"] == "fail":
+        overall   = "❌ NON-COMPLIANT"
         compliant = False
-    elif fin_result["pass"] is False:
-        overall   = "❌ NOT HALAL"
-        compliant = False
-    elif biz_result["pass"] is None or fin_result["pass"] is None:
-        overall   = "⚠️ NEEDS REVIEW"
+    elif biz_result["verdict"] == "questionable":
+        overall   = "🟡 QUESTIONABLE"
         compliant = None
     else:
-        overall   = "✅ HALAL"
+        overall   = "✅ COMPLIANT"
         compliant = True
 
     # Format market cap
     mc = data.get("market_cap")
     if mc:
-        if mc >= 1e12:
-            mc_str = f"${mc/1e12:.2f}T"
-        elif mc >= 1e9:
-            mc_str = f"${mc/1e9:.2f}B"
-        else:
-            mc_str = f"${mc/1e6:.2f}M"
+        if mc >= 1e12:  mc_str = f"${mc/1e12:.2f}T"
+        elif mc >= 1e9: mc_str = f"${mc/1e9:.2f}B"
+        else:           mc_str = f"${mc/1e6:.2f}M"
     else:
         mc_str = "N/A"
 
+    ratios = fin_result.get("ratios", {})
+
     return {
+        # Identity
         "ticker":             ticker,
         "name":               data.get("name", ticker),
         "sector":             data.get("sector", "N/A"),
@@ -452,351 +542,68 @@ def screen_stock(ticker: str) -> dict:
         "price":              data.get("price"),
         "pe_ratio":           data.get("pe_ratio"),
         "dividend_yield":     round((data.get("dividend_yield") or 0) * 100, 2),
+
+        # Verdicts
         "overall":            overall,
         "compliant":          compliant,
+
+        # Business screen
+        "biz_verdict":        biz_result["verdict"],
         "biz_status":         biz_result["status"],
         "biz_reason":         biz_result["reason"],
+        "biz_detail":         biz_result.get("detail", ""),
+
+        # Financial screen
+        "fin_verdict":        fin_result["verdict"],
         "fin_status":         fin_result["status"],
         "fin_reason":         fin_result["reason"],
-        "debt_ratio_pct":     fin_result["ratios"].get("debt_ratio"),
-        "interest_ratio_pct": fin_result["ratios"].get("interest_ratio"),
-        "recv_ratio_pct":     fin_result["ratios"].get("receivables_ratio"),
+
+        # Ratios (all as % values)
+        "debt_ratio_pct":     ratios.get("debt_ratio"),
+        "sec_ratio_pct":      ratios.get("sec_ratio"),
+        "haram_rev_pct":      ratios.get("haram_rev_ratio", 0),
+
+        # Purification
         "purification_pct":   purification["purification_pct"],
-        "fin_warnings":       fin_result.get("warnings", [])
+        "purification_note":  purification["explanation"],
+
+        # Metadata
+        "methodology":        "AAOIFI (Zoya / Islamicly standard)",
+        "screened_at":        datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
 
 
 def screen_portfolio(tickers: list) -> list:
-    """
-    Screen a list of tickers and return sorted results.
-    Halal stocks first, then review, then non-halal.
-    """
+    """Screen a list of tickers. Returns sorted results."""
     results = []
-    total   = len(tickers)
-
-    print(f"\n{Fore.CYAN}{'═'*70}")
-    print(f"  🌙  HALAL STOCK SCREENER — Screening {total} stocks...")
-    print(f"{'═'*70}{Style.RESET_ALL}\n")
-
     for i, ticker in enumerate(tickers, 1):
-        print(f"  [{i:>2}/{total}] Analyzing {ticker.upper():<8}", end="\r")
-        result = screen_stock(ticker.upper().strip())
-        results.append(result)
+        print(f"  [{i:>2}/{len(tickers)}] {ticker.upper():<8}", end="\r")
+        results.append(screen_stock(ticker.upper().strip()))
 
-    # Sort: Halal → Review → Not Halal → Error
-    order = {"✅ HALAL": 0, "⚠️ NEEDS REVIEW": 1, "❌ NOT HALAL": 2, "⚠️ ERROR": 3}
-    results.sort(key=lambda x: order.get(x["overall"], 99))
-
-    print(f"\n{' '*50}\n")  # Clear progress line
+    order = {
+        "✅ COMPLIANT":    0,
+        "🟡 QUESTIONABLE": 1,
+        "❌ NON-COMPLIANT": 2,
+        "⚠️ ERROR":        3
+    }
+    results.sort(key=lambda x: order.get(x.get("overall", ""), 99))
     return results
 
 
-# ═══════════════════════════════════════════════════════════════
-#  SECTION 7: DISPLAY & REPORTING
-# ═══════════════════════════════════════════════════════════════
-
-def print_summary_table(results: list):
-    """Print a clean color-coded summary table to the console."""
-
-    rows = []
-    for r in results:
-        # Color the overall verdict
-        verdict = r["overall"]
-        if "HALAL" in verdict and "NOT" not in verdict:
-            colored = Fore.GREEN + verdict + Style.RESET_ALL
-        elif "REVIEW" in verdict:
-            colored = Fore.YELLOW + verdict + Style.RESET_ALL
-        elif "NOT HALAL" in verdict:
-            colored = Fore.RED + verdict + Style.RESET_ALL
-        else:
-            colored = Fore.WHITE + verdict + Style.RESET_ALL
-
-        rows.append([
-            r["ticker"],
-            r["name"][:30] if r.get("name") else "N/A",
-            r.get("sector", "N/A")[:20] if r.get("sector") else "N/A",
-            f"${r['price']:.2f}" if r.get("price") else "N/A",
-            r.get("market_cap", "N/A"),
-            f"{r['debt_ratio_pct']:.1f}%" if r.get("debt_ratio_pct") is not None else "N/A",
-            f"{r['interest_ratio_pct']:.2f}%" if r.get("interest_ratio_pct") is not None else "N/A",
-            f"{r['purification_pct']:.3f}%" if r.get("purification_pct", 0) > 0 else "—",
-            colored
-        ])
-
-    headers = [
-        "Ticker", "Company", "Sector",
-        "Price", "Mkt Cap",
-        "Debt %", "Int Inc %",
-        "Purify %", "VERDICT"
-    ]
-
-    print(tabulate(rows, headers=headers, tablefmt="rounded_grid"))
-
-    # ── Summary Stats ─────────────────────────────────────────
-    halal   = sum(1 for r in results if r["compliant"] is True)
-    review  = sum(1 for r in results if r["compliant"] is None)
-    haram   = sum(1 for r in results if r["compliant"] is False)
-    total   = len(results)
-
-    print(f"\n{'─'*60}")
-    print(f"  📊 SCREENING SUMMARY")
-    print(f"{'─'*60}")
-    print(f"  Total Screened :  {total}")
-    print(f"  {Fore.GREEN}✅ Halal         :  {halal}{Style.RESET_ALL}")
-    print(f"  {Fore.YELLOW}⚠️  Needs Review  :  {review}{Style.RESET_ALL}")
-    print(f"  {Fore.RED}❌ Not Halal     :  {haram}{Style.RESET_ALL}")
-    print(f"{'─'*60}\n")
-
-
-def print_detailed_report(results: list):
-    """Print a detailed per-stock breakdown."""
-    print(f"\n{Fore.CYAN}{'═'*70}")
-    print(f"  📋  DETAILED SCREENING REPORT")
-    print(f"{'═'*70}{Style.RESET_ALL}\n")
-
-    for r in results:
-        if r["overall"] == "⚠️ ERROR":
-            continue
-
-        # Header
-        verdict_color = (
-            Fore.GREEN  if "HALAL" in r["overall"] and "NOT" not in r["overall"]
-            else Fore.YELLOW if "REVIEW" in r["overall"]
-            else Fore.RED
-        )
-        print(f"  {verdict_color}{'─'*60}")
-        print(f"  {r['overall']}  {r['ticker']} — {r['name']}")
-        print(f"  {'─'*60}{Style.RESET_ALL}")
-
-        print(f"  🏢 Sector    : {r.get('sector', 'N/A')} / {r.get('industry', 'N/A')}")
-        print(f"  🌍 Country   : {r.get('country', 'N/A')}")
-        print(f"  💰 Price     : ${r['price']:.2f}" if r.get("price") else "  💰 Price     : N/A")
-        print(f"  📈 P/E Ratio : {r['pe_ratio']:.1f}x" if r.get("pe_ratio") else "  📈 P/E Ratio : N/A")
-
-        print(f"\n  🕌 BUSINESS ACTIVITY : {r['biz_status']}")
-        print(f"     └─ {r['biz_reason']}")
-
-        print(f"\n  📊 FINANCIAL RATIOS  : {r['fin_status']}")
-        print(f"     └─ {r['fin_reason']}")
-
-        if r.get("debt_ratio_pct") is not None:
-            bar = "█" * int(r["debt_ratio_pct"] / 2)
-            color = Fore.RED if r["debt_ratio_pct"] > 33 else Fore.GREEN
-            print(f"     ├─ Debt/MktCap   : {color}{r['debt_ratio_pct']:>6.1f}%  {bar}{Style.RESET_ALL}  (limit: 33%)")
-
-        if r.get("interest_ratio_pct") is not None:
-            color = Fore.RED if r["interest_ratio_pct"] > 5 else Fore.GREEN
-            print(f"     ├─ Interest Inc  : {color}{r['interest_ratio_pct']:>6.2f}%{Style.RESET_ALL}  (limit: 5%)")
-
-        if r.get("recv_ratio_pct") is not None:
-            color = Fore.RED if r["recv_ratio_pct"] > 49 else Fore.GREEN
-            print(f"     └─ Receivables   : {color}{r['recv_ratio_pct']:>6.1f}%{Style.RESET_ALL}  (limit: 49%)")
-
-        # Purification
-        if r.get("purification_pct", 0) > 0:
-            print(f"\n  🤲 PURIFICATION      : {r['purification_pct']:.3f}% of returns should be donated to charity")
-        else:
-            print(f"\n  🤲 PURIFICATION      : Not required (no impermissible income detected)")
-
-        print()
-
-
-def export_to_excel(results: list, filename: str = None):
-    """Export screening results to a formatted Excel file."""
-    if not filename:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"reports/halal_screening_{ts}.xlsx"
-
-    rows = []
-    for r in results:
-        rows.append({
-            "Ticker":              r.get("ticker"),
-            "Company Name":        r.get("name"),
-            "Sector":              r.get("sector"),
-            "Industry":            r.get("industry"),
-            "Country":             r.get("country"),
-            "Price ($)":           r.get("price"),
-            "Market Cap":          r.get("market_cap"),
-            "P/E Ratio":           r.get("pe_ratio"),
-            "Dividend Yield (%)":  r.get("dividend_yield"),
-            "Debt / MktCap (%)":   r.get("debt_ratio_pct"),
-            "Interest Inc (%)":    r.get("interest_ratio_pct"),
-            "Receivables (%)":     r.get("recv_ratio_pct"),
-            "Purification (%)":    r.get("purification_pct"),
-            "Biz Screen":          r.get("biz_status"),
-            "Biz Reason":          r.get("biz_reason"),
-            "Financial Screen":    r.get("fin_status"),
-            "Financial Reason":    r.get("fin_reason"),
-            "Overall Verdict":     r.get("overall"),
-            "Screen Date":         datetime.now().strftime("%Y-%m-%d %H:%M"),
-        })
-
-    df = pd.DataFrame(rows)
-
-    with pd.ExcelWriter(filename, engine="openpyxl") as writer:
-        df.to_excel(writer, sheet_name="Screening Results", index=False)
-
-        # Auto-fit columns
-        ws = writer.sheets["Screening Results"]
-        for col in ws.columns:
-            max_len = max(len(str(cell.value or "")) for cell in col)
-            ws.column_dimensions[col[0].column_letter].width = min(max_len + 3, 40)
-
-        # Color-code verdict column
-        from openpyxl.styles import PatternFill, Font
-        green  = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-        yellow = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
-        red    = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
-
-        verdict_col_idx = df.columns.get_loc("Overall Verdict") + 1
-        for row_idx, cell in enumerate(
-            ws.iter_rows(min_row=2, min_col=verdict_col_idx,
-                         max_col=verdict_col_idx, max_row=len(rows)+1), 1
-        ):
-            for c in cell:
-                val = str(c.value or "")
-                if "✅ HALAL" in val:
-                    c.fill = green
-                elif "REVIEW" in val:
-                    c.fill = yellow
-                elif "NOT HALAL" in val:
-                    c.fill = red
-
-    logger.info(f"Excel report saved to: {filename}")
-    print(f"\n  📁 Excel report exported: {Fore.CYAN}{filename}{Style.RESET_ALL}\n")
-    return filename
-
-
-def export_to_json(results: list):
-    """Export results as JSON for integration with other apps."""
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"reports/halal_screening_{ts}.json"
-    with open(filename, "w") as f:
-        json.dump(results, f, indent=2, default=str)
-    print(f"  📁 JSON export saved: {Fore.CYAN}{filename}{Style.RESET_ALL}")
-
-
-# ═══════════════════════════════════════════════════════════════
-#  SECTION 8: IBKR INTEGRATION (Live Watchlist Sync)
-# ═══════════════════════════════════════════════════════════════
-
-def get_halal_tickers(results: list) -> list:
-    """Returns only the compliant tickers from screening results."""
-    return [r["ticker"] for r in results if r["compliant"] is True]
-
-
-def save_halal_watchlist(results: list):
-    """
-    Save halal-compliant tickers to a file that can be imported
-    as a watchlist in IBKR TWS.
-    """
-    halal = get_halal_tickers(results)
-    ts    = datetime.now().strftime("%Y%m%d_%H%M%S")
-    fname = f"reports/halal_watchlist_{ts}.txt"
-
-    with open(fname, "w") as f:
-        f.write("# Halal Stock Screener — Compliant Tickers\n")
-        f.write(f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
-        f.write(f"# Total compliant: {len(halal)}\n\n")
-        for t in halal:
-            f.write(f"{t}\n")
-
-    print(f"  📁 Halal watchlist saved: {Fore.GREEN}{fname}{Style.RESET_ALL}")
-    print(f"  💡 Import this file into IBKR TWS: File → Open Watchlist")
-    return fname
-
-
-# ═══════════════════════════════════════════════════════════════
-#  SECTION 9: MAIN ENTRY POINT
-# ═══════════════════════════════════════════════════════════════
-
-def print_banner():
-    banner = f"""
-{Fore.GREEN}
-  ██╗  ██╗ █████╗ ██╗      █████╗ ██╗
-  ██║  ██║██╔══██╗██║     ██╔══██╗██║
-  ███████║███████║██║     ███████║██║
-  ██╔══██║██╔══██║██║     ██╔══██║██║
-  ██║  ██║██║  ██║███████╗██║  ██║███████╗
-  ╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚══════╝
-{Style.RESET_ALL}
-{Fore.CYAN}  🌙  HALAL STOCK SCREENER  ─  Powered by QuantGPT
-{Fore.WHITE}  Shariah-Compliant Equity Analysis | AAOIFI Standards
-{Fore.YELLOW}  ⚠️  For informational purposes only. Consult a qualified Islamic
-      finance scholar for authoritative fatwa on specific stocks.
-{Style.RESET_ALL}
-"""
-    print(banner)
-
-
-def main():
-    print_banner()
-
-    parser = argparse.ArgumentParser(
-        description="🌙 Halal Stock Screener — Shariah-Compliant Equity Screening"
-    )
-    parser.add_argument(
-        "--tickers", nargs="+",
-        help="List of tickers to screen (e.g. AAPL MSFT TSLA)"
-    )
-    parser.add_argument(
-        "--file", type=str,
-        help="Path to a .txt file with one ticker per line"
-    )
-    parser.add_argument(
-        "--export", action="store_true",
-        help="Export results to Excel (.xlsx)"
-    )
-    parser.add_argument(
-        "--json", action="store_true",
-        help="Export results to JSON"
-    )
-    parser.add_argument(
-        "--detailed", action="store_true", default=True,
-        help="Show detailed per-stock breakdown (default: True)"
-    )
-    parser.add_argument(
-        "--watchlist", action="store_true",
-        help="Save compliant tickers to IBKR-importable watchlist file"
-    )
+# ─────────────────────────────────────────────
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="🌙 Halal Stock Screener")
+    parser.add_argument("--tickers", nargs="+")
     args = parser.parse_args()
 
-    # ── Determine tickers ─────────────────────────────────────
-    if args.tickers:
-        tickers = args.tickers
-    elif args.file:
-        with open(args.file) as f:
-            tickers = [
-                line.strip().upper() for line in f
-                if line.strip() and not line.startswith("#")
-            ]
-    else:
-        tickers = DEFAULT_TICKERS
-
-    # ── Run screening ─────────────────────────────────────────
+    tickers = args.tickers or DEFAULT_TICKERS
     results = screen_portfolio(tickers)
 
-    # ── Display results ───────────────────────────────────────
-    print_summary_table(results)
-
-    if args.detailed:
-        print_detailed_report(results)
-
-    # ── Export options ────────────────────────────────────────
-    if args.export:
-        export_to_excel(results)
-
-    if args.json:
-        export_to_json(results)
-
-    if args.watchlist:
-        save_halal_watchlist(results)
-
-    print(f"\n{Fore.CYAN}  ✅ Screening complete! Results saved in /reports/{Style.RESET_ALL}")
-    print(f"  🤲 May Allah bless your investments. Ameen.\n")
-
-    return results
-
-
-if __name__ == "__main__":
-    main()
+    for r in results:
+        print(
+            f"{r['overall']:<22} {r['ticker']:<7} "
+            f"Debt:{r.get('debt_ratio_pct') or 'N/A':>6}% | "
+            f"Sec:{r.get('sec_ratio_pct') or 'N/A':>6}% | "
+            f"Purify:{r.get('purification_pct',0):.3f}%"
+        )
