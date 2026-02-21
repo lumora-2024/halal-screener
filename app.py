@@ -1,7 +1,6 @@
 """
 🌙 Halal Stock Screener — Streamlit Web App
-Methodology: Zoya (https://zoya.finance) + Islamicly (https://www.islamicly.com)
-Standard:    AAOIFI (Accounting & Auditing Organization for Islamic Financial Institutions)
+Standard: AAOIFI (Accounting & Auditing Organization for Islamic Financial Institutions)
 """
 
 import streamlit as st
@@ -13,20 +12,13 @@ from datetime import datetime
 from halal_screener import screen_stock, THRESHOLDS
 
 # ─────────────────────────────────────────────
-#  PAGE CONFIG
+#  PAGE CONFIG — must be first
 # ─────────────────────────────────────────────
 st.set_page_config(
     page_title="🌙 Halal Stock Screener",
     page_icon="🌙",
     layout="wide",
     initial_sidebar_state="expanded",
-    menu_items={
-        "About": (
-            "🌙 Halal Stock Screener\n"
-            "Methodology: Zoya + Islamicly (AAOIFI Standard)\n"
-            "Built with QuantGPT"
-        )
-    }
 )
 
 # ─────────────────────────────────────────────
@@ -140,16 +132,12 @@ hr { border-color: var(--navy-edge) !important; margin: 1.5rem 0 !important; }
 ::-webkit-scrollbar-track { background: var(--navy); }
 ::-webkit-scrollbar-thumb { background: var(--navy-edge); border-radius: 3px; }
 
-/* Verdict badges */
 .badge-compliant    { display:inline-block; padding:3px 14px; border-radius:999px; font-family:'Cinzel',serif; font-size:0.72rem; font-weight:700; letter-spacing:0.08em; background:rgba(39,168,110,0.15); color:#27A86E; border:1px solid rgba(39,168,110,0.35); }
 .badge-questionable { display:inline-block; padding:3px 14px; border-radius:999px; font-family:'Cinzel',serif; font-size:0.72rem; font-weight:700; letter-spacing:0.08em; background:rgba(212,160,23,0.15); color:#D4A017; border:1px solid rgba(212,160,23,0.35); }
 .badge-fail         { display:inline-block; padding:3px 14px; border-radius:999px; font-family:'Cinzel',serif; font-size:0.72rem; font-weight:700; letter-spacing:0.08em; background:rgba(231,76,60,0.15);  color:#E74C3C; border:1px solid rgba(231,76,60,0.35); }
-
-/* Labels */
 .sec-label { font-family:'Cinzel',serif; font-size:0.6rem; letter-spacing:0.22em; text-transform:uppercase; color:#8B6914; margin-bottom:0.4rem; }
-
-/* Source tag */
 .source-tag { display:inline-block; background:rgba(201,168,76,0.08); border:1px solid rgba(201,168,76,0.2); border-radius:4px; padding:1px 8px; font-size:0.72rem; color:#C9A84C; margin-right:4px; font-family:'JetBrains Mono',monospace; }
+.threshold-box { background:rgba(201,168,76,0.05); border:1px solid rgba(201,168,76,0.15); border-radius:8px; padding:0.7rem 1rem; margin-top:0.5rem; font-size:0.82rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -157,6 +145,41 @@ hr { border-color: var(--navy-edge) !important; margin: 1.5rem 0 !important; }
 # ═══════════════════════════════════════════════════════════════
 #  HELPERS
 # ═══════════════════════════════════════════════════════════════
+
+PRESETS = {
+    "🖥️ Big Tech":      "AAPL, MSFT, GOOGL, META, AMZN, NVDA, TSLA",
+    "🏥 Healthcare":    "JNJ, PFE, ABBV, MRK, UNH, BMY, AMGN",
+    "🛒 Consumer":      "WMT, COST, TGT, MCD, PG, KO, SBUX",
+    "🌙 Islamic ETFs":  "SPUS, HLAL, ISDU, UMMA",
+    "🏦 Banks (Test)":  "JPM, BAC, GS, WFC, C",
+    "⚡ Energy":        "XOM, CVX, COP, SLB, OXY",
+    "💊 Pharma":        "LLY, NVO, AZN, GILD, REGN, BIIB",
+    "🏗️ Industrial":   "CAT, DE, HON, MMM, GE, RTX",
+}
+
+STANDARDS = {
+    "AAOIFI  (Recommended)": {
+        "debt": 30, "sec": 30, "rev": 5,
+        "note": "Based on the hadith of Saad bin Abi Waqas — 'one third, and one third is much.'",
+        "source": ""
+    },
+    "Dow Jones Islamic Index  (DJIM)": {
+        "debt": 33, "sec": 33, "rev": 5,
+        "note": "Slightly more lenient. DJIM uses 1/3 (33%) for all ratio screens.",
+        "source": ""
+    },
+    "S&P Shariah": {
+        "debt": 33, "sec": 33, "rev": 5,
+        "note": "S&P Shariah follows similar thresholds to DJIM.",
+        "source": ""
+    },
+    "Custom": {
+        "debt": 30, "sec": 30, "rev": 5,
+        "note": "Set your own thresholds below.",
+        "source": ""
+    },
+}
+
 
 def badge_html(verdict: str) -> str:
     if "COMPLIANT" in verdict and "NON" not in verdict:
@@ -168,9 +191,37 @@ def badge_html(verdict: str) -> str:
 
 
 def fmt(value, suffix="%", decimals=1):
-    if value is None:
-        return "N/A"
-    return f"{value:.{decimals}f}{suffix}"
+    return "N/A" if value is None else f"{value:.{decimals}f}{suffix}"
+
+
+def run_screening(tickers_raw: str):
+    """Parse tickers string, run screening, store in session state."""
+    tickers = [
+        t.strip().upper()
+        for t in tickers_raw.replace("\n", ",").split(",")
+        if t.strip()
+    ]
+    tickers = list(dict.fromkeys(tickers))
+
+    if len(tickers) > 30:
+        st.warning("⚠️ Max 30 tickers. Using first 30.")
+        tickers = tickers[:30]
+
+    progress = st.progress(0, text="Starting...")
+    results  = []
+
+    for i, ticker in enumerate(tickers):
+        progress.progress(
+            (i + 1) / len(tickers),
+            text=f"Screening **{ticker}**... ({i+1}/{len(tickers)})"
+        )
+        results.append(screen_stock(ticker))
+
+    progress.empty()
+
+    order = {"✅ COMPLIANT": 0, "🟡 QUESTIONABLE": 1, "❌ NON-COMPLIANT": 2, "⚠️ ERROR": 3}
+    results.sort(key=lambda x: order.get(x.get("overall", ""), 99))
+    st.session_state.results = results
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -179,18 +230,16 @@ def fmt(value, suffix="%", decimals=1):
 
 def render_result_card(r: dict):
     if r.get("overall") == "⚠️ ERROR":
-        st.warning(f"⚠️ **{r['ticker']}** — Could not fetch data: {r.get('error','Unknown')}")
+        st.warning(f"⚠️ **{r['ticker']}** — {r.get('error','Could not fetch data')}")
         return
 
     verdict   = r.get("overall", "")
     compliant = r.get("compliant")
-
-    icon  = "✅" if compliant is True else ("🟡" if compliant is None else "❌")
-    label = f"{icon}  {r['ticker']}  ·  {(r.get('name') or '')[:38]}  ·  {r.get('market_cap','N/A')}"
+    icon      = "✅" if compliant is True else ("🟡" if compliant is None else "❌")
+    label     = f"{icon}  {r['ticker']}  ·  {(r.get('name') or '')[:38]}  ·  {r.get('market_cap','N/A')}"
 
     with st.expander(label, expanded=True):
 
-        # ── Header row ────────────────────────────────────────
         col_info, col_badge = st.columns([4, 1])
         with col_info:
             st.caption(
@@ -201,73 +250,52 @@ def render_result_card(r: dict):
         with col_badge:
             st.markdown(badge_html(verdict), unsafe_allow_html=True)
 
-        # ── Methodology source tags ───────────────────────────
         st.markdown(
-            '<span class="source-tag">Zoya</span>'
-            '<span class="source-tag">Islamicly</span>'
-            '<span class="source-tag">AAOIFI</span>',
+            '<span class="source-tag">AAOIFI</span>'
+            '<span class="source-tag">Shariah Compliant</span>',
             unsafe_allow_html=True
         )
 
         st.divider()
 
-        # ── Quick stats ───────────────────────────────────────
         s1, s2, s3, s4 = st.columns(4)
-        with s1: st.metric("💰 Price",      f"${r['price']:.2f}" if r.get("price") else "N/A")
-        with s2: st.metric("📈 P/E",        f"{r['pe_ratio']:.1f}×" if r.get("pe_ratio") else "N/A")
-        with s3: st.metric("💵 Div Yield",  f"{r.get('dividend_yield',0):.2f}%")
+        with s1: st.metric("💰 Price",     f"${r['price']:.2f}" if r.get("price") else "N/A")
+        with s2: st.metric("📈 P/E",       f"{r['pe_ratio']:.1f}×" if r.get("pe_ratio") else "N/A")
+        with s3: st.metric("💵 Div Yield", f"{r.get('dividend_yield',0):.2f}%")
         with s4:
             purify = r.get("purification_pct") or 0
             st.metric("🤲 Purify %", f"{purify:.3f}%" if purify > 0 else "—")
 
         st.divider()
 
-        # ── Two-column screens ────────────────────────────────
         biz_col, fin_col = st.columns(2)
 
-        # ── Screen 1: Business Activity ───────────────────────
         with biz_col:
             st.markdown("**🕌 Screen 1 — Business Activity**")
-            st.caption("*Islamicly: <5% haram revenue · Zoya: same + gray-area = Questionable*")
-
+            st.caption("*Primary haram activities auto-fail · Gray-area industries = Questionable · <5% haram revenue rule*")
             bv     = r.get("biz_verdict", "fail")
             reason = r.get("biz_reason", "")
             detail = r.get("biz_detail", "")
-
             if bv == "pass":
                 st.success(f"✅ **PASS** — {reason}")
             elif bv == "questionable":
                 st.warning(f"🟡 **QUESTIONABLE** — {reason}")
-                if detail:
-                    st.caption(detail)
+                if detail: st.caption(detail)
             else:
                 st.error(f"❌ **NON-COMPLIANT** — {reason}")
-                if detail:
-                    st.caption(detail)
+                if detail: st.caption(detail)
 
-        # ── Screen 2: Financial Ratios ────────────────────────
         with fin_col:
             st.markdown("**📊 Screen 2 — Financial Ratios**")
-            st.caption("*Zoya/AAOIFI: Debt <30% · Interest-bearing securities <30%*")
-
             debt_lim = THRESHOLDS["max_debt_to_market_cap"] * 100
             sec_lim  = THRESHOLDS["max_interest_bearing_securities"] * 100
             rev_lim  = THRESHOLDS["max_haram_revenue_ratio"] * 100
+            st.caption(f"*AAOIFI: Debt <{debt_lim:.0f}% · Securities <{sec_lim:.0f}% · Haram rev <{rev_lim:.0f}%*")
 
-            dv = r.get("debt_ratio_pct")
-            sv = r.get("sec_ratio_pct")
-            rv = r.get("haram_rev_pct", 0)
-
-            def ratio_row(label, val, limit, formula_note=""):
-                if val is None:
-                    icon = "⚪"
-                    color = "color:#8B9BB4"
-                elif val > limit:
-                    icon = "❌"
-                    color = "color:#E74C3C"
-                else:
-                    icon = "✅"
-                    color = "color:#27A86E"
+            def ratio_row(label, val, limit, note=""):
+                if val is None:   icon, color = "⚪", "color:#8B9BB4"
+                elif val > limit: icon, color = "❌", "color:#E74C3C"
+                else:             icon, color = "✅", "color:#27A86E"
                 val_str = f"{val:.1f}%" if val is not None else "N/A"
                 st.markdown(
                     f"{icon} **{label}:** "
@@ -275,36 +303,17 @@ def render_result_card(r: dict):
                     f" <span style='color:#8B9BB4;font-size:0.78rem;'>(max {limit:.0f}%)</span>",
                     unsafe_allow_html=True
                 )
-                if formula_note:
-                    st.caption(formula_note)
+                if note: st.caption(note)
 
-            ratio_row(
-                "Interest-Bearing Debt",
-                dv, debt_lim,
-                "Total Debt / Market Cap  [Zoya]"
-            )
-            ratio_row(
-                "Interest-Bearing Securities",
-                sv, sec_lim,
-                "(Cash + Deposits) / Market Cap  [Zoya]"
-            )
-            ratio_row(
-                "Impermissible Revenue",
-                rv, rev_lim,
-                "Haram Income / Total Revenue  [Islamicly]"
-            )
+            ratio_row("Debt / Mkt Cap",           r.get("debt_ratio_pct"), debt_lim, "Total Debt / Market Cap")
+            ratio_row("Interest-Bearing Assets",  r.get("sec_ratio_pct"),  sec_lim,  "(Cash + Deposits) / Market Cap")
+            ratio_row("Impermissible Revenue",    r.get("haram_rev_pct"),  rev_lim,  "Haram Income / Total Revenue")
 
-        # ── Purification ──────────────────────────────────────
         if purify > 0:
             st.info(
-                f"🤲 **Purification Required ({purify:.3f}%):** "
-                f"{r.get('purification_note','')}  "
-                f"*This calculation follows the Zoya & Islamicly methodology.*"
+                f"🤲 **Purification: {purify:.3f}%** — "
+                f"{r.get('purification_note', 'Donate this % of returns to charity.')}"
             )
-
-        # ── Questionable detail ───────────────────────────────
-        if compliant is None and r.get("biz_detail"):
-            st.caption(f"ℹ️ {r.get('biz_detail')}")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -321,12 +330,7 @@ def render_header():
         </h1>
         <p style="font-family:'Crimson Pro',serif; font-size:1rem; color:#8B9BB4;
                   letter-spacing:0.06em; margin-top:0.4rem;">
-            AAOIFI Standard · Methodology aligned with
-            <a href="https://zoya.finance" target="_blank"
-               style="color:#C9A84C; text-decoration:none;">Zoya</a>
-            &amp;
-            <a href="https://www.islamicly.com" target="_blank"
-               style="color:#C9A84C; text-decoration:none;">Islamicly</a>
+            Shariah-Compliant Equity Screening · AAOIFI Standard
         </p>
         <div style="width:80px; height:1px;
                     background:linear-gradient(90deg,transparent,#C9A84C,transparent);
@@ -336,7 +340,8 @@ def render_header():
 
 
 # ═══════════════════════════════════════════════════════════════
-#  SIDEBAR
+#  SIDEBAR  — fixed: standards show live thresholds,
+#             watchlists auto-screen on selection
 # ═══════════════════════════════════════════════════════════════
 
 def render_sidebar():
@@ -351,84 +356,134 @@ def render_sidebar():
 
         st.divider()
 
-        # ── Methodology info ──────────────────────────────────
-        st.markdown('<p class="sec-label">📖 Methodology</p>', unsafe_allow_html=True)
-        st.markdown("""
-        <div style="font-size:0.82rem; color:#8B9BB4; line-height:1.6; margin-bottom:0.5rem;">
-            Screening follows
-            <a href="https://zoya.finance" target="_blank" style="color:#C9A84C;">Zoya</a>
-            +
-            <a href="https://www.islamicly.com" target="_blank" style="color:#C9A84C;">Islamicly</a>
-            — both certified AAOIFI.<br><br>
-            <strong style="color:#F0EBE0;">3-Tier Rating:</strong><br>
-            ✅ <strong>Compliant</strong> — passes all screens<br>
-            🟡 <strong>Questionable</strong> — gray-area (Zoya)<br>
-            ❌ <strong>Non-Compliant</strong> — fails a screen
-        </div>
-        """, unsafe_allow_html=True)
+        # ══════════════════════════════════════════════════════
+        #  SECTION 1: Shariah Standard
+        #  Purpose: changes the financial ratio thresholds used
+        #  for screening. Selecting a different standard updates
+        #  the thresholds AND shows you exactly what changed.
+        # ══════════════════════════════════════════════════════
+        st.markdown('<p class="sec-label">⚙️ Shariah Standard</p>', unsafe_allow_html=True)
+        st.caption("Changes the financial ratio thresholds used to screen stocks.")
 
-        st.divider()
-
-        # ── Threshold display (not editable in standard mode) ─
-        st.markdown('<p class="sec-label">⚙️ AAOIFI Thresholds</p>', unsafe_allow_html=True)
-
-        standard = st.selectbox(
+        selected_std = st.selectbox(
             "Standard",
-            ["Zoya / Islamicly (AAOIFI)", "Dow Jones Islamic (33%)", "Custom"],
-            help=(
-                "Zoya & Islamicly both use 30% thresholds derived from the hadith "
-                "of Saad Bin Abi Waqas. DJIM uses 33%."
-            )
+            list(STANDARDS.keys()),
+            index=0,
+            key="selected_standard",
+            label_visibility="collapsed"
         )
 
-        if standard == "Dow Jones Islamic (33%)":
-            debt_lim, sec_lim, rev_lim = 33, 33, 5
-            st.info("DJIM uses 33% for debt & securities thresholds.")
-        elif standard == "Custom":
-            debt_lim = st.slider("Max Debt / MktCap (%)",             10, 50, 30)
-            sec_lim  = st.slider("Max Interest Securities / MktCap (%)", 10, 50, 30)
-            rev_lim  = st.slider("Max Impermissible Revenue (%)",       1, 15,  5)
-        else:
-            debt_lim, sec_lim, rev_lim = 30, 30, 5
+        std_config = STANDARDS[selected_std]
 
+        # Custom sliders
+        if selected_std == "Custom":
+            debt_lim = st.slider("Max Debt / Mkt Cap (%)",             10, 50, 30, key="custom_debt")
+            sec_lim  = st.slider("Max Interest-Bearing Assets (%)",    10, 50, 30, key="custom_sec")
+            rev_lim  = st.slider("Max Haram Revenue (%)",               1, 15,  5, key="custom_rev")
+        else:
+            debt_lim = std_config["debt"]
+            sec_lim  = std_config["sec"]
+            rev_lim  = std_config["rev"]
+
+        # Apply thresholds globally
         THRESHOLDS["max_debt_to_market_cap"]          = debt_lim / 100
         THRESHOLDS["max_interest_bearing_securities"] = sec_lim  / 100
         THRESHOLDS["max_haram_revenue_ratio"]         = rev_lim  / 100
 
-        # Show current thresholds
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.metric("Debt limit",       f"{debt_lim}%")
-            st.metric("Securities limit", f"{sec_lim}%")
-        with col_b:
-            st.metric("Haram rev limit",  f"{rev_lim}%")
+        # ── Show live threshold values (so users see what changed) ──
+        st.markdown(
+            f"""
+            <div class="threshold-box">
+                <div style="color:#C9A84C; font-family:'Cinzel',serif; font-size:0.65rem;
+                            letter-spacing:0.15em; margin-bottom:0.5rem;">
+                    ACTIVE THRESHOLDS
+                </div>
+                <div style="display:flex; justify-content:space-between; margin-bottom:0.3rem;">
+                    <span style="color:#8B9BB4;">📊 Debt / Mkt Cap</span>
+                    <span style="color:#F0EBE0; font-family:monospace;">max {debt_lim}%</span>
+                </div>
+                <div style="display:flex; justify-content:space-between; margin-bottom:0.3rem;">
+                    <span style="color:#8B9BB4;">💰 Int. Assets</span>
+                    <span style="color:#F0EBE0; font-family:monospace;">max {sec_lim}%</span>
+                </div>
+                <div style="display:flex; justify-content:space-between;">
+                    <span style="color:#8B9BB4;">🚫 Haram Revenue</span>
+                    <span style="color:#F0EBE0; font-family:monospace;">max {rev_lim}%</span>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        if std_config["note"]:
+            st.caption(f"ℹ️ {std_config['note']}")
+
+        # If results already exist, offer to re-screen with new thresholds
+        if st.session_state.get("results") and selected_std != st.session_state.get("last_standard"):
+            st.session_state["last_standard"] = selected_std
+            st.warning("⚠️ Standard changed — click **Re-Screen** to apply new thresholds.")
+            if st.button("🔄 Re-Screen with New Thresholds", use_container_width=True):
+                run_screening(st.session_state.get("input_tickers", ""))
+                st.rerun()
 
         st.divider()
 
-        # ── Quick watchlists ──────────────────────────────────
+        # ══════════════════════════════════════════════════════
+        #  SECTION 2: Quick Watchlists
+        #  Purpose: instantly loads a preset list of tickers
+        #  AND automatically screens them — no extra button click.
+        # ══════════════════════════════════════════════════════
         st.markdown('<p class="sec-label">📋 Quick Watchlists</p>', unsafe_allow_html=True)
+        st.caption("Select a preset to instantly screen that group of stocks.")
 
-        presets = {
-            "🖥️ Big Tech":     "AAPL, MSFT, GOOGL, META, AMZN, NVDA, TSLA",
-            "🏥 Healthcare":   "JNJ, PFE, ABBV, MRK, UNH, BMY, AMGN",
-            "🛒 Consumer":     "WMT, COST, TGT, MCD, PG, KO, SBUX",
-            "🌙 Islamic ETFs": "SPUS, HLAL, ISDU, UMMA",
-            "🏦 Banks (Test)": "JPM, BAC, GS, WFC, C",
-            "⚡ Energy":       "XOM, CVX, COP, SLB, OXY",
-        }
+        chosen = st.selectbox(
+            "Watchlist",
+            ["— Select a preset to screen —"] + list(PRESETS.keys()),
+            key="chosen_preset",
+            label_visibility="collapsed"
+        )
 
-        chosen = st.selectbox("Load preset", ["— Select —"] + list(presets.keys()))
-        if chosen != "— Select —":
-            st.session_state["input_tickers"] = presets[chosen]
-            st.rerun()
+        if chosen != "— Select a preset to screen —":
+            preset_tickers = PRESETS[chosen]
+            st.session_state["input_tickers"] = preset_tickers
+
+            # Show which tickers will be screened
+            st.markdown(
+                f"<div style='font-size:0.8rem; color:#8B9BB4; margin:0.3rem 0;'>"
+                f"Tickers: <span style='color:#C9A84C; font-family:monospace;'>{preset_tickers}</span>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+
+            # Auto-screen button (clearly labelled)
+            if st.button(f"🔍 Screen {chosen}", use_container_width=True, key="preset_screen_btn"):
+                run_screening(preset_tickers)
+                # Reset the selectbox so it can be used again
+                st.session_state["chosen_preset"] = "— Select a preset to screen —"
+                st.rerun()
 
         st.divider()
 
-        # ── Disclaimer ────────────────────────────────────────
-        st.markdown('<p class="sec-label">⚠️ Disclaimer</p>', unsafe_allow_html=True)
+        # ══════════════════════════════════════════════════════
+        #  SECTION 3: About
+        # ══════════════════════════════════════════════════════
+        st.markdown('<p class="sec-label">ℹ️ How It Works</p>', unsafe_allow_html=True)
+        st.markdown("""
+        <div style="font-size:0.82rem; color:#8B9BB4; line-height:1.7;">
+            <strong style="color:#F0EBE0;">2 Screens applied:</strong><br>
+            <span style="color:#27A86E;">①</span> Business Activity<br>
+            <span style="color:#27A86E;">②</span> Financial Ratios<br><br>
+            <strong style="color:#F0EBE0;">3 Verdicts:</strong><br>
+            ✅ <strong>Compliant</strong> — passes all<br>
+            🟡 <strong>Questionable</strong> — gray area<br>
+            ❌ <strong>Non-Compliant</strong> — fails<br><br>
+            Standard: <strong style="color:#C9A84C;">AAOIFI</strong>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.divider()
         st.caption(
-            "For informational purposes only. This tool mirrors the public "
-            "methodologies of Zoya and Islamicly but is **not affiliated** with either. "
+            "⚠️ For informational purposes only. Not a fatwa. "
             "Consult a qualified Islamic finance scholar for authoritative rulings."
         )
 
@@ -439,25 +494,24 @@ def render_sidebar():
 
 def to_excel_bytes(results: list) -> bytes:
     rows = [{
-        "Ticker":                   r.get("ticker"),
-        "Company":                  r.get("name"),
-        "Sector":                   r.get("sector"),
-        "Country":                  r.get("country"),
-        "Price ($)":                r.get("price"),
-        "Market Cap":               r.get("market_cap"),
-        "P/E":                      r.get("pe_ratio"),
-        "Div Yield (%)":            r.get("dividend_yield"),
-        "Debt / MktCap (%)":        r.get("debt_ratio_pct"),
-        "Int. Securities / MktCap": r.get("sec_ratio_pct"),
-        "Haram Revenue (%)":        r.get("haram_rev_pct"),
-        "Purification (%)":         r.get("purification_pct"),
-        "Business Screen":          r.get("biz_status"),
-        "Business Reason":          r.get("biz_reason"),
-        "Financial Screen":         r.get("fin_status"),
-        "Financial Reason":         r.get("fin_reason"),
-        "Overall Verdict":          r.get("overall"),
-        "Methodology":              r.get("methodology"),
-        "Screened At":              r.get("screened_at"),
+        "Ticker":            r.get("ticker"),
+        "Company":           r.get("name"),
+        "Sector":            r.get("sector"),
+        "Country":           r.get("country"),
+        "Price ($)":         r.get("price"),
+        "Market Cap":        r.get("market_cap"),
+        "P/E":               r.get("pe_ratio"),
+        "Div Yield (%)":     r.get("dividend_yield"),
+        "Debt/MktCap (%)":   r.get("debt_ratio_pct"),
+        "IntAssets/MktCap":  r.get("sec_ratio_pct"),
+        "Haram Rev (%)":     r.get("haram_rev_pct"),
+        "Purification (%)":  r.get("purification_pct"),
+        "Biz Screen":        r.get("biz_status"),
+        "Biz Reason":        r.get("biz_reason"),
+        "Fin Screen":        r.get("fin_status"),
+        "Overall Verdict":   r.get("overall"),
+        "Methodology":       r.get("methodology"),
+        "Screened At":       r.get("screened_at"),
     } for r in results]
 
     df  = pd.DataFrame(rows)
@@ -496,16 +550,16 @@ def to_excel_bytes(results: list) -> bytes:
 
 def to_csv(results: list) -> str:
     return pd.DataFrame([{
-        "Ticker":           r.get("ticker"),
-        "Company":          r.get("name"),
-        "Sector":           r.get("sector"),
-        "Price":            r.get("price"),
-        "Debt/MktCap%":     r.get("debt_ratio_pct"),
-        "IntSec/MktCap%":   r.get("sec_ratio_pct"),
-        "HaramRev%":        r.get("haram_rev_pct"),
-        "Purify%":          r.get("purification_pct"),
-        "Verdict":          r.get("overall"),
-        "ScreenedAt":       r.get("screened_at"),
+        "Ticker":         r.get("ticker"),
+        "Company":        r.get("name"),
+        "Sector":         r.get("sector"),
+        "Price":          r.get("price"),
+        "Debt%":          r.get("debt_ratio_pct"),
+        "IntAssets%":     r.get("sec_ratio_pct"),
+        "HaramRev%":      r.get("haram_rev_pct"),
+        "Purify%":        r.get("purification_pct"),
+        "Verdict":        r.get("overall"),
+        "ScreenedAt":     r.get("screened_at"),
     } for r in results]).to_csv(index=False)
 
 
@@ -515,15 +569,21 @@ def to_csv(results: list) -> str:
 
 def main():
     render_header()
+
+    # ── Session state defaults ────────────────────────────────
+    if "results"          not in st.session_state: st.session_state.results          = []
+    if "input_tickers"    not in st.session_state: st.session_state.input_tickers    = "AAPL, MSFT, TSLA, NVDA, JNJ, WMT, JPM, GOOGL"
+    if "last_standard"    not in st.session_state: st.session_state.last_standard    = list(STANDARDS.keys())[0]
+    if "chosen_preset"    not in st.session_state: st.session_state.chosen_preset    = "— Select a preset to screen —"
+
+    # Sidebar is rendered AFTER session state is initialised
     render_sidebar()
 
-    if "results"       not in st.session_state: st.session_state.results       = []
-    if "input_tickers" not in st.session_state: st.session_state.input_tickers = "AAPL, MSFT, TSLA, NVDA, JNJ, WMT, JPM, GOOGL"
-
     # ─────────────────────────────────────────────────────────
-    #  INPUT ROW
+    #  INPUT ROW — manual ticker entry
     # ─────────────────────────────────────────────────────────
-    st.markdown('<p class="sec-label">🔍 Enter Tickers</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sec-label">🔍 Screen Custom Tickers</p>', unsafe_allow_html=True)
+    st.caption("Or use the **Quick Watchlists** in the sidebar to instantly screen a preset group.")
 
     col_ta, col_btn1, col_btn2 = st.columns([5, 1, 1])
 
@@ -532,53 +592,24 @@ def main():
             label="tickers",
             label_visibility="collapsed",
             value=st.session_state.input_tickers,
-            height=80,
-            placeholder="AAPL, MSFT, TSLA, NVDA, ..."
+            height=75,
+            placeholder="Enter tickers separated by commas:  AAPL, MSFT, TSLA, NVDA ...",
+            key="ticker_input"
         )
+
     with col_btn1:
-        st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
-        screen_btn = st.button("🔍 Screen", use_container_width=True)
+        st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+        screen_btn = st.button("🔍 Screen", use_container_width=True, key="manual_screen")
+
     with col_btn2:
-        st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
-        if st.button("✕ Clear", use_container_width=True):
+        st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+        if st.button("✕ Clear", use_container_width=True, key="clear_btn"):
             st.session_state.results = []
             st.rerun()
 
-    # ─────────────────────────────────────────────────────────
-    #  RUN SCREENING
-    # ─────────────────────────────────────────────────────────
     if screen_btn and tickers_raw.strip():
-        tickers = [
-            t.strip().upper()
-            for t in tickers_raw.replace("\n", ",").split(",")
-            if t.strip()
-        ]
-        tickers = list(dict.fromkeys(tickers))
-
-        if len(tickers) > 30:
-            st.warning("⚠️ Max 30 tickers per screen. Using first 30.")
-            tickers = tickers[:30]
-
-        progress_bar = st.progress(0, text="Initialising...")
-        results      = []
-
-        for i, ticker in enumerate(tickers):
-            progress_bar.progress(
-                (i + 1) / len(tickers),
-                text=f"Screening **{ticker}** using Zoya/Islamicly methodology... ({i+1}/{len(tickers)})"
-            )
-            results.append(screen_stock(ticker))
-
-        progress_bar.empty()
-
-        order = {
-            "✅ COMPLIANT":    0,
-            "🟡 QUESTIONABLE": 1,
-            "❌ NON-COMPLIANT": 2,
-            "⚠️ ERROR":        3
-        }
-        results.sort(key=lambda x: order.get(x.get("overall", ""), 99))
-        st.session_state.results = results
+        st.session_state.input_tickers = tickers_raw
+        run_screening(tickers_raw)
         st.rerun()
 
     # ─────────────────────────────────────────────────────────
@@ -593,13 +624,10 @@ def main():
             <p style="font-family:'Cinzel',serif; color:#C9A84C; letter-spacing:0.12em; font-size:0.9rem;">
                 AWAITING ANALYSIS
             </p>
-            <p style="font-size:0.9rem; max-width:460px; margin:0.5rem auto; line-height:1.8;">
-                Enter stock tickers above and press <strong>Screen</strong>.<br>
-                Methodology follows
-                <a href="https://zoya.finance" target="_blank" style="color:#C9A84C;">Zoya</a>
-                and
-                <a href="https://www.islamicly.com" target="_blank" style="color:#C9A84C;">Islamicly</a>
-                — both AAOIFI certified.
+            <p style="font-size:0.9rem; max-width:500px; margin:0.5rem auto; line-height:1.8;">
+                <strong>Option A:</strong> Type tickers above → click <strong>Screen</strong><br>
+                <strong>Option B:</strong> Pick a preset from <strong>Quick Watchlists</strong>
+                in the sidebar → click the Screen button that appears
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -608,29 +636,27 @@ def main():
     # ─────────────────────────────────────────────────────────
     #  SUMMARY METRICS
     # ─────────────────────────────────────────────────────────
-    total  = len(results)
-    comp   = sum(1 for r in results if r.get("compliant") is True)
-    quest  = sum(1 for r in results if r.get("compliant") is None)
-    fail   = sum(1 for r in results if r.get("compliant") is False)
+    total = len(results)
+    comp  = sum(1 for r in results if r.get("compliant") is True)
+    quest = sum(1 for r in results if r.get("compliant") is None)
+    fail  = sum(1 for r in results if r.get("compliant") is False)
 
     st.divider()
     st.markdown('<p class="sec-label">📊 Summary</p>', unsafe_allow_html=True)
 
     m1, m2, m3, m4, m5 = st.columns(5)
-    with m1: st.metric("Total",              total)
-    with m2: st.metric("✅ Compliant",        comp,  delta=f"{int(comp/total*100)}%" if total else None)
-    with m3: st.metric("🟡 Questionable",     quest)
-    with m4: st.metric("❌ Non-Compliant",     fail)
-    with m5: st.metric("🕐 Screened At",      datetime.now().strftime("%H:%M"))
+    with m1: st.metric("Total Screened",      total)
+    with m2: st.metric("✅ Compliant",         comp,  delta=f"{int(comp/total*100)}%" if total else None)
+    with m3: st.metric("🟡 Questionable",      quest)
+    with m4: st.metric("❌ Non-Compliant",      fail)
+    with m5: st.metric("🕐 Time",              datetime.now().strftime("%H:%M"))
 
-    # Methodology note
     st.markdown(
-        '<p style="font-size:0.78rem; color:#8B9BB4; margin-top:0.3rem;">'
-        '📖 Screening methodology: '
-        '<a href="https://help.zoya.finance/en/articles/4189798" target="_blank" style="color:#C9A84C;">Zoya (AAOIFI)</a>'
-        ' · '
-        '<a href="https://www.islamicly.com/home/screeningProcess" target="_blank" style="color:#C9A84C;">Islamicly (AAOIFI)</a>'
-        ' · Thresholds: Debt &lt;30%, Securities &lt;30%, Haram revenue &lt;5%'
+        '<p style="font-size:0.78rem; color:#8B9BB4; margin-top:0.2rem;">'
+        f'📖 AAOIFI Standard'
+        f' · Debt &lt;{THRESHOLDS["max_debt_to_market_cap"]*100:.0f}%'
+        f', Int. Assets &lt;{THRESHOLDS["max_interest_bearing_securities"]*100:.0f}%'
+        f', Haram rev &lt;{THRESHOLDS["max_haram_revenue_ratio"]*100:.0f}%'
         '</p>',
         unsafe_allow_html=True
     )
@@ -644,10 +670,9 @@ def main():
         "📋  All Results",
         "✅  Compliant",
         "🟡  Questionable",
-        "📊  Data Table"
+        "📊  Data Table",
     ])
 
-    # ── All Results ───────────────────────────────────────────
     with tab_all:
         fc1, fc2 = st.columns(2)
         with fc1:
@@ -658,92 +683,90 @@ def main():
             )
         with fc2:
             sort_by = st.selectbox(
-                "Sort by",
-                ["Compliance Status", "Ticker A→Z", "Debt %", "Securities %"],
+                "Sort",
+                ["Compliance Status", "Ticker A→Z", "Debt %", "Int. Assets %"],
                 key="sort_tab1"
             )
 
         filtered = {
-            "All":               results,
-            "✅ Compliant":      [r for r in results if r.get("compliant") is True],
-            "🟡 Questionable":   [r for r in results if r.get("compliant") is None],
-            "❌ Non-Compliant":  [r for r in results if r.get("compliant") is False],
+            "All":              results,
+            "✅ Compliant":     [r for r in results if r.get("compliant") is True],
+            "🟡 Questionable":  [r for r in results if r.get("compliant") is None],
+            "❌ Non-Compliant": [r for r in results if r.get("compliant") is False],
         }[filter_by]
 
         if sort_by == "Ticker A→Z":
-            filtered = sorted(filtered, key=lambda x: x.get("ticker",""))
+            filtered = sorted(filtered, key=lambda x: x.get("ticker", ""))
         elif sort_by == "Debt %":
             filtered = sorted(filtered, key=lambda x: x.get("debt_ratio_pct") or 999)
-        elif sort_by == "Securities %":
+        elif sort_by == "Int. Assets %":
             filtered = sorted(filtered, key=lambda x: x.get("sec_ratio_pct") or 999)
 
         for r in filtered:
             render_result_card(r)
 
-    # ── Compliant ─────────────────────────────────────────────
     with tab_comp:
         comp_list = [r for r in results if r.get("compliant") is True]
         if not comp_list:
-            st.info("No fully compliant stocks in this screen. Try different tickers.")
+            st.info("No fully compliant stocks found. Try different tickers or adjust thresholds.")
         else:
             pills = "  ".join(f"`{r['ticker']}`" for r in comp_list)
-            st.markdown(f"**Compliant tickers ({len(comp_list)}):** {pills}")
+            st.markdown(f"**Compliant ({len(comp_list)}):** {pills}")
             st.divider()
             for r in comp_list:
                 render_result_card(r)
 
-    # ── Questionable ──────────────────────────────────────────
     with tab_quest:
         quest_list = [r for r in results if r.get("compliant") is None]
         if not quest_list:
             st.info("No questionable stocks in this screen.")
         else:
-            st.markdown("""
-            **About Questionable stocks** *(Zoya definition)*
-
-            A stock is rated Questionable when either:
-            1. The company operates in a gray-area industry where scholars disagree on permissibility
-               *(e.g. advertising platforms, supermarkets, hotels, diversified conglomerates)*
-            2. There is insufficient public data to make a confident compliance determination
-
-            *Exercise caution and do your own research before investing in these.*
-            """)
+            st.info(
+                "**About Questionable:** Rated questionable when "
+                "the company is in a gray-area industry where scholars disagree on permissibility, or when "
+                "there is insufficient public data to make a confident ruling. "
+                "Exercise caution and do your own research before investing."
+            )
             st.divider()
             for r in quest_list:
                 render_result_card(r)
 
-    # ── Data Table ────────────────────────────────────────────
     with tab_table:
         table_rows = [r for r in results if r.get("overall") != "⚠️ ERROR"]
         if table_rows:
             df = pd.DataFrame([{
-                "Ticker":         r.get("ticker"),
-                "Company":        (r.get("name") or "")[:32],
-                "Sector":         (r.get("sector") or "")[:22],
-                "Price":          f"${r['price']:.2f}" if r.get("price") else "N/A",
-                "Mkt Cap":        r.get("market_cap","N/A"),
-                "Debt %":         fmt(r.get("debt_ratio_pct")),
-                "Int. Sec %":     fmt(r.get("sec_ratio_pct")),
-                "Haram Rev %":    fmt(r.get("haram_rev_pct"), decimals=3),
-                "Purify %":       f"{r['purification_pct']:.3f}%" if (r.get("purification_pct") or 0) > 0 else "—",
-                "Verdict":        r.get("overall",""),
+                "Ticker":      r.get("ticker"),
+                "Company":     (r.get("name") or "")[:32],
+                "Sector":      (r.get("sector") or "")[:22],
+                "Price":       f"${r['price']:.2f}" if r.get("price") else "N/A",
+                "Mkt Cap":     r.get("market_cap","N/A"),
+                "Debt %":      fmt(r.get("debt_ratio_pct")),
+                "Int. Assets": fmt(r.get("sec_ratio_pct")),
+                "Haram Rev %": fmt(r.get("haram_rev_pct"), decimals=3),
+                "Purify %":    f"{r['purification_pct']:.3f}%" if (r.get("purification_pct") or 0) > 0 else "—",
+                "Verdict":     r.get("overall",""),
             } for r in table_rows])
 
-            st.dataframe(df, use_container_width=True, hide_index=True, height=420)
-            st.caption("Debt % and Int. Sec % use Zoya's 30% threshold. Haram Rev % uses Islamicly's 5% threshold.")
+            st.dataframe(df, use_container_width=True, hide_index=True, height=400)
+            st.caption(
+                f"Thresholds: Debt <{THRESHOLDS['max_debt_to_market_cap']*100:.0f}% · "
+                f"Int. Assets <{THRESHOLDS['max_interest_bearing_securities']*100:.0f}% · "
+                f"Haram Rev <{THRESHOLDS['max_haram_revenue_ratio']*100:.0f}%  "
+                f"(AAOIFI Standard)"
+            )
 
     # ─────────────────────────────────────────────────────────
     #  EXPORT
     # ─────────────────────────────────────────────────────────
     st.divider()
-    st.markdown('<p class="sec-label">📥 Export Results</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sec-label">📥 Export</p>', unsafe_allow_html=True)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M")
     e1, e2, e3 = st.columns(3)
 
     with e1:
         st.download_button(
-            "📊 Download Excel",
+            "📊 Excel Report",
             data=to_excel_bytes(results),
             file_name=f"halal_screening_{ts}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -751,7 +774,7 @@ def main():
         )
     with e2:
         st.download_button(
-            "📄 Download CSV",
+            "📄 CSV",
             data=to_csv(results),
             file_name=f"halal_screening_{ts}.csv",
             mime="text/csv",
@@ -759,7 +782,7 @@ def main():
         )
     with e3:
         st.download_button(
-            "🗂 Download JSON",
+            "🗂 JSON",
             data=json.dumps(results, indent=2, default=str),
             file_name=f"halal_screening_{ts}.json",
             mime="application/json",
@@ -772,15 +795,10 @@ def main():
     st.divider()
     st.markdown("""
     <div style="text-align:center; padding:0.5rem 0 1.5rem; color:#8B9BB4; font-size:0.8rem; line-height:1.8;">
-        🌙 <strong style="color:#C9A84C;">Halal Stock Screener</strong> · Built with QuantGPT<br>
-        Methodology aligned with
-        <a href="https://zoya.finance" target="_blank" style="color:#C9A84C;">Zoya</a>
-        and
-        <a href="https://www.islamicly.com" target="_blank" style="color:#C9A84C;">Islamicly</a>
-        · AAOIFI Certified Standard<br>
-        <em>Not affiliated with Zoya or Islamicly.
-        For informational purposes only. Not a fatwa.
-        Consult a qualified Islamic finance scholar.</em>
+        🌙 <strong style="color:#C9A84C;">Halal Stock Screener</strong><br>
+        Shariah-Compliant Equity Screening · AAOIFI Standard<br>
+        <em>For informational purposes only. Not a fatwa.
+        Consult a qualified Islamic finance scholar for authoritative rulings.</em>
     </div>
     """, unsafe_allow_html=True)
 
