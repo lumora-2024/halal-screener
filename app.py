@@ -458,8 +458,6 @@ def render_sidebar():
             # Auto-screen button (clearly labelled)
             if st.button(f"🔍 Screen {chosen}", use_container_width=True, key="preset_screen_btn"):
                 run_screening(preset_tickers)
-                # Reset the selectbox so it can be used again
-                st.session_state["chosen_preset"] = "— Select a preset to screen —"
                 st.rerun()
 
         st.divider()
@@ -574,7 +572,6 @@ def main():
     if "results"          not in st.session_state: st.session_state.results          = []
     if "input_tickers"    not in st.session_state: st.session_state.input_tickers    = "AAPL, MSFT, TSLA, NVDA, JNJ, WMT, JPM, GOOGL"
     if "last_standard"    not in st.session_state: st.session_state.last_standard    = list(STANDARDS.keys())[0]
-    if "chosen_preset"    not in st.session_state: st.session_state.chosen_preset    = "— Select a preset to screen —"
 
     # Sidebar is rendered AFTER session state is initialised
     render_sidebar()
