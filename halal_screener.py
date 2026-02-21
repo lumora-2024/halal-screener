@@ -35,6 +35,8 @@ import yfinance as yf
 import pandas as pd
 import logging
 import os
+import time
+import random
 from datetime import datetime
 import warnings
 warnings.filterwarnings("ignore")
@@ -193,64 +195,93 @@ DEFAULT_TICKERS = [
 #  SECTION 2: DATA FETCHING
 # ═══════════════════════════════════════════════════════════════
 
-def fetch_stock_data(ticker: str) -> dict:
+def fetch_stock_data(ticker: str, max_retries: int = 3) -> dict:
     """
-    Fetch financial data from Yahoo Finance.
-    Returns all fields needed for AAOIFI screening.
+    Fetch financial data from Yahoo Finance with retry + exponential backoff.
+    Automatically handles Yahoo Finance rate limiting (429 Too Many Requests).
     """
-    try:
-        stock = yf.Ticker(ticker)
-        info  = stock.info
+    for attempt in range(max_retries):
+        try:
+            # Stagger requests to avoid triggering Yahoo Finance rate limits
+            time.sleep(random.uniform(0.8, 1.5))
 
-        name        = info.get("longName", ticker)
-        sector      = info.get("sector", "N/A") or "N/A"
-        industry    = info.get("industry", "N/A") or "N/A"
-        description = (info.get("longBusinessSummary", "") or "").lower()
-        country     = info.get("country", "N/A") or "N/A"
-        market_cap  = info.get("marketCap")
-        price       = info.get("currentPrice") or info.get("regularMarketPrice")
+            stock = yf.Ticker(ticker)
+            info  = stock.info
 
-        # ── Balance Sheet ────────────────────────────────────
-        # AAOIFI screens for interest-bearing debt.
-        # yfinance "totalDebt" = long-term + short-term debt (good proxy)
-        total_debt  = info.get("totalDebt", 0) or 0
-        total_cash  = info.get("totalCash", 0) or 0  # cash + short-term investments
+            # Empty dict = Yahoo silently rate-limited us
+            if not info or len(info) < 5:
+                raise ValueError("Empty response — possible rate limit")
 
-        # ── Income Statement ─────────────────────────────────
-        total_revenue    = info.get("totalRevenue")
-        # interestExpense is our best proxy for interest income from operations
-        interest_expense = abs(info.get("interestExpense", 0) or 0)
+            name        = info.get("longName", ticker)
+            sector      = info.get("sector", "N/A") or "N/A"
+            industry    = info.get("industry", "N/A") or "N/A"
+            description = (info.get("longBusinessSummary", "") or "").lower()
+            country     = info.get("country", "N/A") or "N/A"
+            market_cap  = info.get("marketCap")
+            price       = info.get("currentPrice") or info.get("regularMarketPrice")
 
-        # ── Valuation ────────────────────────────────────────
-        pe_ratio       = info.get("trailingPE")
-        pb_ratio       = info.get("priceToBook")
-        dividend_yield = info.get("dividendYield", 0) or 0
-        eps            = info.get("trailingEps")
-        roe            = info.get("returnOnEquity")
+            # ── Balance Sheet ─────────────────────────────────
+            total_debt  = info.get("totalDebt", 0) or 0
+            total_cash  = info.get("totalCash", 0) or 0
 
-        return {
-            "ticker":           ticker,
-            "name":             name,
-            "sector":           sector,
-            "industry":         industry,
-            "description":      description,
-            "country":          country,
-            "market_cap":       market_cap,
-            "price":            price,
-            "total_debt":       total_debt,
-            "total_cash":       total_cash,
-            "total_revenue":    total_revenue,
-            "interest_expense": interest_expense,
-            "pe_ratio":         pe_ratio,
-            "pb_ratio":         pb_ratio,
-            "dividend_yield":   dividend_yield,
-            "eps":              eps,
-            "roe":              roe,
-        }
+            # ── Income Statement ──────────────────────────────
+            total_revenue    = info.get("totalRevenue")
+            interest_expense = abs(info.get("interestExpense", 0) or 0)
 
-    except Exception as e:
-        logger.warning(f"[{ticker}] Failed to fetch data: {e}")
-        return {"ticker": ticker, "error": str(e)}
+            # ── Valuation ─────────────────────────────────────
+            pe_ratio       = info.get("trailingPE")
+            pb_ratio       = info.get("priceToBook")
+            dividend_yield = info.get("dividendYield", 0) or 0
+            eps            = info.get("trailingEps")
+            roe            = info.get("returnOnEquity")
+
+            return {
+                "ticker":           ticker,
+                "name":             name,
+                "sector":           sector,
+                "industry":         industry,
+                "description":      description,
+                "country":          country,
+                "market_cap":       market_cap,
+                "price":            price,
+                "total_debt":       total_debt,
+                "total_cash":       total_cash,
+                "total_revenue":    total_revenue,
+                "interest_expense": interest_expense,
+                "pe_ratio":         pe_ratio,
+                "pb_ratio":         pb_ratio,
+                "dividend_yield":   dividend_yield,
+                "eps":              eps,
+                "roe":              roe,
+            }
+
+        except Exception as e:
+            err_str = str(e).lower()
+            is_rate_limit = any(x in err_str for x in [
+                "rate limit", "too many requests", "429",
+                "empty response", "no data", "timeout"
+            ])
+
+            if is_rate_limit and attempt < max_retries - 1:
+                # Exponential backoff: 4s, 8s, 12s...
+                wait = (attempt + 1) * 4 + random.uniform(1, 3)
+                logger.warning(
+                    f"[{ticker}] Rate limited. "
+                    f"Waiting {wait:.1f}s before retry {attempt+2}/{max_retries}..."
+                )
+                time.sleep(wait)
+                continue
+
+            logger.warning(f"[{ticker}] Failed after {attempt+1} attempt(s): {e}")
+            return {
+                "ticker": ticker,
+                "error":  "Rate limited by Yahoo Finance — wait 30 seconds and try again"
+            }
+
+    return {
+        "ticker": ticker,
+        "error":  "Rate limit exceeded after retries — please wait 1 minute and try again"
+    }
 
 
 # ═══════════════════════════════════════════════════════════════
