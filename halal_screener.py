@@ -1,17 +1,15 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════╗
-║              🌙 HALAL STOCK SCREENER — QuantGPT by Umar               ║
-║     Screening methodology aligned with Zoya & Islamicly (AAOIFI)     ║
+║              🌙 HALAL STOCK SCREENER — Core Engine                    ║
+║     AAOIFI Shariah-Compliant Equity Screening                         ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 
-Methodology Sources:
-  - Zoya      (https://zoya.finance)          — AAOIFI, 30% thresholds
-  - Islamicly (https://www.islamicly.com)     — AAOIFI, 5% haram revenue rule
+Standard: AAOIFI (Accounting & Auditing Organization for Islamic Financial Institutions)
 
-Three-Tier Rating System (matching Zoya):
-  ✅ COMPLIANT    — Passes all business activity + financial screens
-  🟡 QUESTIONABLE — Gray-area sector OR data insufficient for a firm ruling
-  ❌ NON-COMPLIANT — Fails business activity or financial ratio screen
+Three-Tier Rating System:
+  ✅ COMPLIANT      — Passes all business activity + financial screens
+  🟡 QUESTIONABLE   — Gray-area sector OR data insufficient for firm ruling
+  ❌ NON-COMPLIANT  — Fails business activity or financial ratio screen
 
 Two Screens (AAOIFI standard):
   Screen 1 — Business Activity:
@@ -21,13 +19,13 @@ Two Screens (AAOIFI standard):
     • Gray-area (questionable): advertising, media/entertainment, defence,
       supermarkets (sell alcohol/pork), hotels, diversified conglomerates
 
-  Screen 2 — Financial Ratios (Zoya methodology):
+  Screen 2 — Financial Ratios:
     • Interest-bearing debt   / Market Cap  <  30%
-    • Interest-bearing assets / Market Cap  <  30%  ← cash + deposits
-    (Note: Islamicly also follows AAOIFI; Zoya uses 30%, not 33%)
+    • Interest-bearing assets / Market Cap  <  30%  (cash + deposits)
+    • Impermissible revenue   / Total revenue < 5%
 
   Purification:
-    • % of impermissible revenue / total revenue = % of returns to donate
+    • Impermissible revenue / total revenue = % of returns to donate to charity
 
 Dependencies:
     pip install yfinance pandas tabulate colorama openpyxl requests streamlit
@@ -62,26 +60,25 @@ logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════
 #  SECTION 1: SCREENING CONFIGURATION
-#  Sources: Zoya help center + Islamicly screening page
+#  Standard: AAOIFI
 # ═══════════════════════════════════════════════════════════════
 
-# ── Thresholds (Zoya / AAOIFI standard) ──────────────────────
+# ── Thresholds (AAOIFI standard) ─────────────────────────────
 THRESHOLDS = {
-    # Zoya: "debt-to-market cap ratio can be no higher than 30%"
-    # Reference: https://help.zoya.finance/en/articles/4189798
+    # AAOIFI: debt-to-market cap ratio no higher than 30%
+    # Based on hadith of Saad bin Abi Waqas: "one third, and one third is much"
     "max_debt_to_market_cap":        0.30,
 
-    # Zoya: "interest-bearing securities cannot exceed 30% of market cap"
+    # AAOIFI: interest-bearing securities cannot exceed 30% of market cap
     # Formula: (Cash + Cash Equivalents + Deposits) / Market Cap
     "max_interest_bearing_securities": 0.30,
 
-    # Islamicly: "revenue from non-permissible operating activities < 5%"
-    # Zoya: "no more than 5% of revenue can come from impermissible means"
+    # AAOIFI: revenue from non-permissible activities must be < 5%
     "max_haram_revenue_ratio":       0.05,
 }
 
 # ── Primary Haram Activities (auto-fail) ─────────────────────
-# Both Zoya and Islamicly auto-fail companies with these as core activities.
+# Both AAOIFI auto-fail companies with these as core activities.
 PRIMARY_HARAM = {
     "Alcohol": [
         "alcohol", "beer", "wine", "spirits", "brewery", "distillery",
@@ -120,9 +117,9 @@ PRIMARY_HARAM = {
     ],
 }
 
-# ── Gray-Area Activities (Questionable — Zoya's "Questionable" status) ──
-# Zoya: "companies that operate in an industry that falls into a gray area,
-# prompting differing opinions among scholars"
+# ── Gray-Area Activities (Questionable — Questionable status) ──
+# Companies in gray-area industries,
+# (differing scholarly opinions)
 GRAY_AREA = {
     "Advertising Platforms": [
         "digital advertising", "online advertising", "ad-supported",
@@ -153,7 +150,7 @@ GRAY_AREA = {
 }
 
 # ── Sector-Level Flags ────────────────────────────────────────
-# Sectors where Islamicly and Zoya both flag for closer review
+# Sectors flagged for closer review
 HARAM_SECTORS = [
     "Banks—Regional", "Banks—Diversified", "Banks—Global",
     "Insurance—Life", "Insurance—Diversified", "Insurance—Property & Casualty",
@@ -199,7 +196,7 @@ DEFAULT_TICKERS = [
 def fetch_stock_data(ticker: str) -> dict:
     """
     Fetch financial data from Yahoo Finance.
-    Returns all fields needed for Zoya/Islamicly-style screening.
+    Returns all fields needed for AAOIFI screening.
     """
     try:
         stock = yf.Ticker(ticker)
@@ -214,7 +211,7 @@ def fetch_stock_data(ticker: str) -> dict:
         price       = info.get("currentPrice") or info.get("regularMarketPrice")
 
         # ── Balance Sheet ────────────────────────────────────
-        # Zoya uses "interest-bearing debt" specifically.
+        # AAOIFI screens for interest-bearing debt.
         # yfinance "totalDebt" = long-term + short-term debt (good proxy)
         total_debt  = info.get("totalDebt", 0) or 0
         total_cash  = info.get("totalCash", 0) or 0  # cash + short-term investments
@@ -258,24 +255,16 @@ def fetch_stock_data(ticker: str) -> dict:
 
 # ═══════════════════════════════════════════════════════════════
 #  SECTION 3: BUSINESS ACTIVITY SCREEN
-#  Methodology: Zoya + Islamicly (both AAOIFI)
+#  Methodology: AAOIFI (both AAOIFI)
 # ═══════════════════════════════════════════════════════════════
 
 def screen_business_activity(data: dict) -> dict:
     """
-    Screen 1 — Business Activity.
+    Screen 1 — Business Activity (AAOIFI standard).
 
-    Zoya approach:
-      - Primary haram → NON-COMPLIANT
-      - Revenue from ALL impermissible sources must be < 5%
-      - Gray-area industries → QUESTIONABLE (scholars disagree)
-
-    Islamicly approach:
-      - Revenue from non-permissible operating activities < 5% of total
-        operating income → otherwise NON-COMPLIANT
-
-    Returns:
-        dict with keys: status, verdict ('pass'|'questionable'|'fail'), reason
+    - Primary haram core business → NON-COMPLIANT
+    - Revenue from impermissible sources must be < 5% of total revenue
+    - Gray-area industries → QUESTIONABLE (scholars differ on permissibility)
     """
     sector      = (data.get("sector",      "") or "").strip()
     industry    = (data.get("industry",    "") or "").strip()
@@ -298,7 +287,7 @@ def screen_business_activity(data: dict) -> dict:
             "reason":  f"Primary haram activity: {primary_violations[0]}",
             "detail":  (
                 "Core business involves a prohibited activity under AAOIFI "
-                "standards (Zoya / Islamicly). No scholar permits investment here."
+                "standards (AAOIFI). This activity is impermissible."
             )
         }
 
@@ -311,7 +300,7 @@ def screen_business_activity(data: dict) -> dict:
                 "reason":  f"Haram sector: {hs}",
                 "detail":  (
                     "Company operates in a sector classified as non-permissible "
-                    "by AAOIFI standards. Flagged by Zoya & Islamicly."
+                    "by AAOIFI standards. Flagged by AAOIFI."
                 )
             }
 
@@ -335,7 +324,7 @@ def screen_business_activity(data: dict) -> dict:
             "status":  "🟡 QUESTIONABLE",
             "reason":  f"Gray-area industry: {gray_flags[0]}",
             "detail":  (
-                f"Zoya rates this 'Questionable' — scholars differ on permissibility "
+                f"Scholars differ on permissibility "
                 f"for '{gray_flags[0]}'. Review the business model carefully before investing."
             )
         }
@@ -345,35 +334,30 @@ def screen_business_activity(data: dict) -> dict:
         "verdict": "pass",
         "status":  "✅ PASS",
         "reason":  "No haram or gray-area business activity detected",
-        "detail":  (
-            "Core business activity appears permissible under AAOIFI standards "
-            "as applied by Zoya and Islamicly."
-        )
+        "detail":  "Core business activity appears permissible under AAOIFI Shariah standards."
     }
 
 
 # ═══════════════════════════════════════════════════════════════
 #  SECTION 4: FINANCIAL RATIO SCREEN
-#  Methodology: Zoya (https://help.zoya.finance/...)
+#  AAOIFI Financial Ratio Screen
 # ═══════════════════════════════════════════════════════════════
 
 def screen_financial_ratios(data: dict) -> dict:
     """
-    Screen 2 — Financial Ratios (Zoya methodology, AAOIFI standard).
+    Screen 2 — Financial Ratios (AAOIFI standard).
 
     Ratio 1 — Interest-Bearing Debt:
         Total Debt / Market Cap  <  30%
-        Zoya: "a company's debt-to-market cap ratio can be no higher than 30%"
 
     Ratio 2 — Interest-Bearing Securities:
         (Cash + Cash Equivalents + Deposits) / Market Cap  <  30%
-        Zoya: "interest-bearing securities cannot exceed 30% of market cap"
+
+    Ratio 3 — Impermissible Revenue:
+        Haram Income / Total Revenue  <  5%
 
     Basis for 30%: Derived from the hadith of Saad Bin Abi Waqas where
-    the Prophet ﷺ said "one third, and one third is much" — AAOIFI applies
-    this to financial ratios (Zoya explains this on their help page).
-
-    Note: Some providers (DJIM) use 33%, but Zoya & Islamicly use 30%.
+    the Prophet ﷺ said "one third, and one third is much."
     """
     market_cap = data.get("market_cap")
     total_debt  = data.get("total_debt",  0) or 0
@@ -402,7 +386,7 @@ def screen_financial_ratios(data: dict) -> dict:
         warnings_.append("Market cap unavailable — debt ratio skipped")
 
     # ── Ratio 2: Interest-bearing securities / Market Cap ─────
-    # Zoya formula: (Cash + Cash Equivalents + Deposits) / Market Cap
+    # AAOIFI formula: (Cash + Cash Equivalents + Deposits) / Market Cap
     if market_cap and market_cap > 0:
         sec_ratio             = total_cash / market_cap
         ratios["sec_ratio"]   = round(sec_ratio * 100, 2)
@@ -415,7 +399,7 @@ def screen_financial_ratios(data: dict) -> dict:
         ratios["sec_ratio"] = None
         warnings_.append("Market cap unavailable — securities ratio skipped")
 
-    # ── Ratio 3: Haram Revenue % (Islamicly / Zoya 5% rule) ──
+    # ── Ratio 3: Haram Revenue % (AAOIFI 5% rule) ──
     # We use interest_expense as proxy for impermissible income
     if total_revenue > 0 and interest_expense > 0:
         haram_rev_ratio           = interest_expense / total_revenue
@@ -442,7 +426,7 @@ def screen_financial_ratios(data: dict) -> dict:
     return {
         "verdict":  "pass",
         "status":   "✅ PASS",
-        "reason":   "All financial ratios within Zoya/AAOIFI limits",
+        "reason":   "All financial ratios within AAOIFI limits",
         "ratios":   ratios,
         "warnings": warnings_
     }
@@ -450,7 +434,7 @@ def screen_financial_ratios(data: dict) -> dict:
 
 # ═══════════════════════════════════════════════════════════════
 #  SECTION 5: PURIFICATION CALCULATION
-#  Both Zoya & Islamicly provide purification %
+#  Both AAOIFI provide purification %
 # ═══════════════════════════════════════════════════════════════
 
 def calculate_purification(data: dict) -> dict:
@@ -458,9 +442,8 @@ def calculate_purification(data: dict) -> dict:
     Purification = Impermissible Income / Total Revenue × 100
 
     This is the percentage of any dividends or capital gains the investor
-    should donate to charity to purify their returns.
-
-    Both Zoya and Islamicly provide this calculation in their apps.
+    should donate to charity to purify their returns from any residual
+    impermissible income — in accordance with AAOIFI Shariah principles.
     """
     total_revenue    = data.get("total_revenue")    or 0
     interest_expense = data.get("interest_expense", 0) or 0
@@ -488,7 +471,7 @@ def screen_stock(ticker: str) -> dict:
     """
     Full halal screening pipeline for a single ticker.
 
-    Overall rating (matching Zoya's 3-tier system):
+    Overall rating (AAOIFI 3-tier system):
       ✅ COMPLIANT      — Passes both screens
       🟡 QUESTIONABLE   — Gray-area business OR borderline financials
       ❌ NON-COMPLIANT  — Fails business activity or financial screen
@@ -568,7 +551,7 @@ def screen_stock(ticker: str) -> dict:
         "purification_note":  purification["explanation"],
 
         # Metadata
-        "methodology":        "AAOIFI (Zoya / Islamicly standard)",
+        "methodology":        "AAOIFI Shariah Standard",
         "screened_at":        datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
 
