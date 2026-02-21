@@ -195,7 +195,7 @@ def fmt(value, suffix="%", decimals=1):
 
 
 def run_screening(tickers_raw: str):
-    """Parse tickers string, run screening, store in session state."""
+    """Parse tickers, screen each with rate-limit protection."""
     tickers = [
         t.strip().upper()
         for t in tickers_raw.replace("\n", ",").split(",")
@@ -207,17 +207,35 @@ def run_screening(tickers_raw: str):
         st.warning("⚠️ Max 30 tickers. Using first 30.")
         tickers = tickers[:30]
 
-    progress = st.progress(0, text="Starting...")
+    # Warn if large batch — Yahoo Finance rate limits kick in above ~8 tickers
+    if len(tickers) > 6:
+        st.info(
+            f"⏳ Screening {len(tickers)} tickers. "
+            f"Each request is spaced out to avoid Yahoo Finance rate limits — "
+            f"estimated **{len(tickers) * 2}–{len(tickers) * 3} seconds**. Please wait."
+        )
+
+    progress = st.progress(0, text="Connecting to market data...")
     results  = []
 
     for i, ticker in enumerate(tickers):
         progress.progress(
             (i + 1) / len(tickers),
-            text=f"Screening **{ticker}**... ({i+1}/{len(tickers)})"
+            text=f"📊 Screening **{ticker}**... ({i+1}/{len(tickers)}) — fetching market data"
         )
         results.append(screen_stock(ticker))
 
     progress.empty()
+
+    # Count errors
+    errors = [r for r in results if r.get("overall") == "⚠️ ERROR"]
+    if errors:
+        err_tickers = ", ".join(r["ticker"] for r in errors)
+        st.warning(
+            f"⚠️ **{len(errors)} ticker(s) could not be fetched** ({err_tickers}). "
+            f"Yahoo Finance rate-limited the request. "
+            f"Wait 30 seconds then re-screen just those tickers."
+        )
 
     order = {"✅ COMPLIANT": 0, "🟡 QUESTIONABLE": 1, "❌ NON-COMPLIANT": 2, "⚠️ ERROR": 3}
     results.sort(key=lambda x: order.get(x.get("overall", ""), 99))
